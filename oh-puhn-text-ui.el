@@ -146,7 +146,7 @@ Returns abort function to cancel the request."
          (handle-generate (use-callback
                            (lambda (user-node-id)
                              (unless (funcall streaming-ref)
-                               (let* ((new-tree (tree-add-child (funcall conversation-tree-sig) user-node-id (list 'assistant "")))
+                               (let* ((new-tree (tree-add-child (funcall conversation-tree-sig) user-node-id (list 'assistant nil)))
                                       (assistant-node-id (1- (length new-tree)))
                                       (history-ids (tree-get-chat-id-history-from-leaf new-tree user-node-id))
                                       (message-history (mapcar (lambda (id)
@@ -209,10 +209,11 @@ Returns abort function to cancel the request."
                         (bottom . ,(reed-taffy-length 'length 1)))))
 
 
-(defvar style-flow-right `((size
+(defvar style-float-right `((size
                             (width . ,(reed-taffy-length 'percent 1.0))
                             (height . ,(reed-taffy-length 'AUTO 0.0)))
                            (justify_content . (End))))
+
 
 (fc! UserMessage (conversation-tree-sig leaf-id-sig node index total-swipes ongenerate)
      (let* ((input-editor-ref (use-ref (lambda ())))
@@ -241,13 +242,18 @@ Returns abort function to cancel the request."
                                       (funcall leaf-id-sig user-node-id)
                                       (funcall ongenerate user-node-id)))))))
          :onblur (lambda (e) (funcall close-input-editor))
-         :style style-flow-right
+         :style style-float-right
          (p
-          :style style-border
+          :style `((border
+                    (left . ,(reed-taffy-length 'length 1))
+                    (right . ,(reed-taffy-length 'length 1))
+                    (top . ,(reed-taffy-length 'length 1))
+                    (bottom . ,(reed-taffy-length 'length 1))))
           ({} message-content)))
-        (div
-         :style style-flow-right
-         (p ({} (if (> total-swipes 1) (format "<%s/%s>" (1+ index) total-swipes) nil)))))))
+        ({} (if (> total-swipes 1)
+                (esx! (div :style style-float-right
+                           (p ({} (format "<%s/%s>" (1+ index) total-swipes)))))
+              nil)))))
 
 (fc! AssistantMessage (node index total-swipes ongenerate)
      (let* ((regenerate-listener-ref (use-ref (lambda ())))
@@ -268,6 +274,7 @@ Returns abort function to cancel the request."
                      (pubsub-subscribe
                       'regenerate
                       (lambda ()
+                        (message "regenerate")
                         (let* ((inner-node (funcall node-ref))
                                (inner-parent-id (cadr inner-node))
                                (inner-role (car (nthcdr 2 inner-node))))
@@ -300,7 +307,10 @@ Returns abort function to cancel the request."
        (reed-hooks-use-drop unsub)
        (esx!
         (div
-         :style style-full-width
+         :style `((size
+                   (width . ,(reed-taffy-length 'percent 1.0))
+                   (height . ,(reed-taffy-length 'AUTO 0.0)))
+                  (flex_wrap . Wrap))
          :onhover (lambda (e)
                     (funcall
                      swipe-listener-ref
@@ -471,7 +481,7 @@ Returns a closure to manually close the buffer."
                            (width . ,(reed-taffy-length 'percent 1.0))
                            (height . ,(reed-taffy-length 'AUTO 0.0)))
                           (justify_content . (Center)))
-                 (p "How can I help you today?")))))))
+                 (p "How can I help you today?\n`C-x e` to start writing your first message.")))))))
 
 (fc! App ()
      (let* ((conversation-tree-sig (use-signal (lambda() [])))
@@ -520,7 +530,7 @@ Returns a closure to manually close the buffer."
 
 (defvar last-buffer-width (window-width))
 
-(defun handle-render ()
+(defun oh-puhn-text-ui-handle-render ()
   (with-current-buffer (get-buffer-create app-name)
     (let ((content (reed-render-immediate app-name)))
       (erase-buffer)
@@ -547,34 +557,34 @@ Returns a closure to manually close the buffer."
         (setq should-render t)
         (reed-set-width app-name (scale-windows-width last-buffer-width)))
       (when should-render
-        (handle-render)))))
+        (oh-puhn-text-ui-handle-render)))))
 
 
 
-(defun handle-click ()
+(defun oh-puhn-text-ui-handle-click ()
   (interactive)
   (reed-handle-cursor-event app-name 'click last-post-command-position '())
-  (handle-render))
+  (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-ui-swipe-left ()
   (interactive)
   (pubsub-emit 'swipe 'left)
-  (handle-render))
+  (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-ui-swipe-right ()
   (interactive)
   (pubsub-emit 'swipe 'right)
-  (handle-render))
+  (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-ui-regenerate ()
   (interactive)
   (pubsub-emit 'regenerate)
-  (handle-render))
+  (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-ui-abort ()
   (interactive)
   (pubsub-emit 'abort)
-  (handle-render))
+  (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-open-editor ()
   (interactive)
@@ -585,16 +595,17 @@ Returns a closure to manually close the buffer."
 
 (defun oh-puhn-text-ui-key-binding ()
   (with-current-buffer app-name
-    (local-set-key (kbd "RET") #'handle-click)
+    (local-set-key (kbd "RET") #'oh-puhn-text-ui-handle-click)
     (local-set-key (kbd "[") #'oh-puhn-text-ui-swipe-left)
     (local-set-key (kbd "]") #'oh-puhn-text-ui-swipe-right)
     (local-set-key (kbd "C-r") #'oh-puhn-text-ui-regenerate)
     (local-set-key (kbd "C-g") #'oh-puhn-text-ui-abort)
     (local-set-key (kbd "C-x e") #'oh-puhn-text-open-editor)
-    (local-set-key [down-mouse-1] #'handle-click)))
+    ;;(local-set-key [down-mouse-1] #'oh-puhn-text-ui-handle-click)
+    ))
 
 
-(pubsub-subscribe 'render (lambda () (handle-render)))
+(pubsub-subscribe 'render (lambda () (oh-puhn-text-ui-handle-render)))
 (reed-register-app app-name #'App)
 ;(reed-init-tracing)
 
@@ -606,9 +617,8 @@ Returns a closure to manually close the buffer."
     (switch-to-buffer app-name)
     (oh-puhn-text-ui-key-binding)
     (setq-local truncate-lines t)
-    (handle-render)))
+    (oh-puhn-text-ui-handle-render)))
 
-(oh-puhn-text-ui)
 
 (provide 'oh-puhn-text-ui)
 ;;; oh-puhn-text-ui.el ends here
