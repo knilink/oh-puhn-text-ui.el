@@ -40,3 +40,5 @@ Load the dynamic module and elisp script to emacs.d as well as customize complet
 - `C-g`: abort editing
 
 ## Demo
+[demo.webm](https://github.com/user-attachments/assets/6c05176b-7a75-49d9-bb77-b5a847cc544d)
+
