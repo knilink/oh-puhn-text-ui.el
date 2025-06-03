@@ -196,24 +196,6 @@ Returns abort function to cancel the request."
      (funcall unsub))))
 
 
-(defvar style-full-width `(
-                           (display . Block)
-                           (size
-                            (width . ,(reed-taffy-length 'percent 1.0))
-                            (height . ,(reed-taffy-length 'AUTO 0.0)))))
-
-(defvar style-border `((border
-                        (left . ,(reed-taffy-length 'length 1))
-                        (right . ,(reed-taffy-length 'length 1))
-                        (top . ,(reed-taffy-length 'length 1))
-                        (bottom . ,(reed-taffy-length 'length 1)))))
-
-
-(defvar style-float-right `((size
-                            (width . ,(reed-taffy-length 'percent 1.0))
-                            (height . ,(reed-taffy-length 'AUTO 0.0)))
-                           (justify_content . (End))))
-
 
 (fc! UserMessage (conversation-tree-sig leaf-id-sig node index total-swipes ongenerate)
      (let* ((input-editor-ref (use-ref (lambda ())))
@@ -242,16 +224,25 @@ Returns abort function to cancel the request."
                                       (funcall leaf-id-sig user-node-id)
                                       (funcall ongenerate user-node-id)))))))
          :onblur (lambda (e) (funcall close-input-editor))
-         :style style-float-right
+         :style (style!*
+                 (size
+                  (width . 100%)
+                  (height . AUTO))
+                 (justify_content . '(End)))
          (p
-          :style `((border
-                    (left . ,(reed-taffy-length 'length 1))
-                    (right . ,(reed-taffy-length 'length 1))
-                    (top . ,(reed-taffy-length 'length 1))
-                    (bottom . ,(reed-taffy-length 'length 1))))
+          :style (style!*
+                  (border
+                   (left . 1pt)
+                   (right . 1pt)
+                   (top . 1pt)
+                   (bottom . 1pt)))
           ({} message-content)))
         ({} (if (> total-swipes 1)
-                (esx! (div :style style-float-right
+                (esx! (div :style (style!*
+                                   (size
+                                    (width . 100%)
+                                    (height . AUTO))
+                                   (justify_content . '(End)))
                            (p ({} (format "<%s/%s>" (1+ index) total-swipes)))))
               nil)))))
 
@@ -274,18 +265,18 @@ Returns abort function to cancel the request."
                      (pubsub-subscribe
                       'regenerate
                       (lambda ()
-                        (message "regenerate")
                         (let* ((inner-node (funcall node-ref))
                                (inner-parent-id (cadr inner-node))
                                (inner-role (car (nthcdr 2 inner-node))))
                           (when (eq inner-role 'assistant)
                             (funcall ongenerate inner-parent-id)))))))
          :onleave (lambda (e) (funcall unsub))
-         :style `((margin
-                   (left . ,(reed-taffy-length 'length 1))
-                   (right . ,(reed-taffy-length 'length 1))
-                   (top . ,(reed-taffy-length 'length 1))
-                   (bottom . ,(reed-taffy-length 'length 0))))
+         :style (style!*
+                 (margin
+                  (left . 1pt)
+                  (right . 1pt)
+                  (top . 1pt)
+                  (bottom . 0pt)))
          ({} message-content)
          ({} (if (> total-swipes 1) (format "\n<%s/%s>" (1+ index) total-swipes) nil))))))
 
@@ -298,6 +289,7 @@ Returns abort function to cancel the request."
             (siblins (tree-get-children conversation-tree (tree-get-parent conversation-tree id)))
             (current-index (cl-position id siblins))
             (swipe-info-ref (use-ref (lambda ())))
+            (hovering-sig (use-signal (lambda ())))
 
             (unsub (use-callback (lambda ()
                                    (when (funcall swipe-listener-ref)
@@ -307,11 +299,14 @@ Returns abort function to cancel the request."
        (reed-hooks-use-drop unsub)
        (esx!
         (div
-         :style `((size
-                   (width . ,(reed-taffy-length 'percent 1.0))
-                   (height . ,(reed-taffy-length 'AUTO 0.0)))
-                  (flex_wrap . Wrap))
+         :face (if (funcall hovering-sig) '(:background "gray90") nil)
+
+         :style (style!* (size
+                          (width . 100%)
+                          (height . AUTO))
+                         (flex_wrap . 'Wrap))
          :onhover (lambda (e)
+                    (funcall hovering-sig t)
                     (funcall
                      swipe-listener-ref
                      (pubsub-subscribe
@@ -328,7 +323,9 @@ Returns abort function to cancel the request."
                                             inner-siblins))))
                              (when (and siblin (not (equal siblin inner-id)))
                                (funcall leaf-id-sig (tree-get-latest-leaf inner-tree siblin)))))))))
-         :onleave (lambda (e) (funcall unsub))
+         :onleave (lambda (e)
+                    (funcall hovering-sig nil)
+                    (funcall unsub))
          ({} (if (eq role 'user)
                  (esx! (UserMessage
                         :conversation-tree-sig conversation-tree-sig
@@ -434,14 +431,14 @@ Returns a closure to manually close the buffer."
                                       (funcall onsubmit new-content))
                                   (funcall value-sig new-content))))))
          :onblur (lambda (e) (funcall close-input-editor))
-         :style `((size
-                   (width . ,(reed-taffy-length 'percent 1.0))
-                   (height . ,(reed-taffy-length 'AUTO 0.0)))
+         :style (style!*(size
+                   (width . 100%)
+                   (height . AUTO))
                   (border
-                   (left . ,(reed-taffy-length 'length 0))
-                   (right . ,(reed-taffy-length 'length 0))
-                   (top . ,(reed-taffy-length 'length 1))
-                   (bottom . ,(reed-taffy-length 'length 0))))
+                   (left . 0pt)
+                   (right . 0pt)
+                   (top . 1pt)
+                   (bottom . 0pt)))
          ({} (if (equal value "")
                  "<Press 'Enter' here to input...>"
                value))))))
@@ -460,41 +457,39 @@ Returns a closure to manually close the buffer."
 (fc! Wellcome ()
      (esx!
       (div
-       :style `((justify_content . (Center))
+       :style (style!* (justify_content . '(Center))
                 (size
-                 (width . ,(reed-taffy-length 'percent 1.0))
-                 (height . ,(reed-taffy-length 'AUTO 0.0))))
-       (div :style `((align_items . (Center))
-                     (size
-                      (width . ,(reed-taffy-length 'length 80))
-                      (height . ,(reed-taffy-length 'AUTO 0))))
-            (div :style `((size
-                           (width . ,(reed-taffy-length 'percent 1.0))
-                           (height . ,(reed-taffy-length 'AUTO 0)))
-                          (flex_wrap . Wrap))
-                 (div :style `((size
-                                (width . ,(reed-taffy-length 'percent 1.0))
-                                (height . ,(reed-taffy-length 'AUTO 0.0)))
-                               (justify_content . (Center)))
+                 (width . 100%)
+                 (height . AUTO)))
+       (div :style (style!*
+                    (align_items . '(Center))
+                    (size
+                     (width . 80pt)
+                     (height . AUTO)))
+            (div :style (style!*
+                          (size
+                           (width . 100%)
+                           (height . AUTO))
+                          (flex_wrap . 'Wrap))
+                 (div :style (style!*
+                              (size
+                               (width . 100%)
+                               (height . AUTO))
+                              (justify_content . '(Center)))
                  (p ({} oh-puhn-logo)))
-            (div :style `((size
-                           (width . ,(reed-taffy-length 'percent 1.0))
-                           (height . ,(reed-taffy-length 'AUTO 0.0)))
-                          (justify_content . (Center)))
-                 (p "How can I help you today?\n`C-x e` to start writing your first message.")))))))
+                 (div :style (style!*
+                              (size
+                               (width . 100%)
+                               (height . AUTO))
+                              (justify_content . '(Center)))
+                 (p "How can I help you today?\n" (span "`C-x e` to start writing your first message."))))))))
 
 (fc! App ()
-     (let* ((conversation-tree-sig (use-signal (lambda() [])))
+     (let* ((conversation-tree-sig (use-signal (lambda() (or [] [(0 nil 'user "hello")
+                                                                 (1 0 'assistant "Hello there! 👋\n\nHow can I help you today? Just let me know what you're thinking, or if you just wanted to say hi, that's great too!\n\nI can:\n\n* **Answer questions:** About pretty much anything!\n* **Generate text:** Like stories, poems, code, scripts, musical pieces, email, letters, etc.\n* **Translate languages**\n* **Summarize text**\n* **Brainstorm ideas**\n* **Just chat!**")]))))
             (conversation-tree (funcall conversation-tree-sig))
             (leaf-id-sig (use-signal (lambda() (tree-get-latest-leaf (funcall conversation-tree-sig) nil))))
             (message-id-list (tree-get-chat-id-history-from-leaf (funcall conversation-tree-sig) (funcall leaf-id-sig)))
-            (style `((size
-                      (width . ,(reed-taffy-length 'percent 1.0))
-                      (height . ,(reed-taffy-length 'AUTO 0.0)))
-                     (max_size
-                      (width . ,(reed-taffy-length 'length 80))
-                      (height . ,(reed-taffy-length 'AUTO 0.0)))
-                     (flex_wrap . Wrap)))
             (handle-generate (use-chat-request conversation-tree-sig leaf-id-sig))
             (handle-submit
              (use-callback
@@ -506,12 +501,20 @@ Returns a closure to manually close the buffer."
                   (funcall handle-generate user-node-id))))))
        (esx!
         (div
-         :style `((size
-                   (width . ,(reed-taffy-length 'percent 1.0))
-                   (height . ,(reed-taffy-length 'AUTO 0.0)))
-                  (justify_content . (Center)))
+         :style (style!*
+                 (size
+                  (width . 100%)
+                  (height . AUTO))
+                 (justify_content . '(Center)))
          (div
-          :style style
+          :style (style!*
+                  (size
+                   (width . 100%)
+                   (height . AUTO))
+                  (max_size
+                   (width . 80pt)
+                   (height . AUTO))
+                  (flex_wrap . 'Wrap))
           ({} (if (= 0 (length conversation-tree))
                   (Wellcome)
                 (mapcar
@@ -532,10 +535,16 @@ Returns a closure to manually close the buffer."
 
 (defun oh-puhn-text-ui-handle-render ()
   (with-current-buffer (get-buffer-create app-name)
-    (let ((content (reed-render-immediate app-name)))
-      (erase-buffer)
-      (insert content)
-      (goto-char last-post-command-position)
+    (let* ((res (reed-render-immediate app-name))
+           (content (car res))
+           (faces (cdr res)))
+      (with-silent-modifications
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (set-text-properties (point-min) (point-max) nil))
+        (insert content)
+        (mapc (lambda (face) (apply #'add-face-text-property face)) faces)
+        (goto-char last-post-command-position))
       ;;(reed-handle-cursor-event app-name 'move last-post-command-position '())
 )))
 
@@ -551,7 +560,6 @@ Returns a closure to manually close the buffer."
         (setq last-post-command-position (point))
         (setq should-render t)
         (reed-handle-cursor-event app-name 'move last-post-command-position '()))
-      (message "[buffer] %s %s" last-buffer-width (window-width))
       (when (not (= last-buffer-width (window-width)))
         (setq last-buffer-width (window-width))
         (setq should-render t)
@@ -619,6 +627,6 @@ Returns a closure to manually close the buffer."
     (setq-local truncate-lines t)
     (oh-puhn-text-ui-handle-render)))
 
-
+(oh-puhn-text-ui)
 (provide 'oh-puhn-text-ui)
 ;;; oh-puhn-text-ui.el ends here
