@@ -154,28 +154,31 @@ Returns abort function to cancel the request."
                                                                    `(("role" . ,(symbol-name (car node)))
                                                                      ("content" . ,(cadr node))))
                                                                  ) history-ids))
-                                      (abort (openai-chat-request
-                                              oh-puhn-text-ui-model
-                                              message-history
-                                              (lambda (chunk)
-                                                (let* ((tree (funcall conversation-tree-sig))
-                                                       (nt (tree-append-chunck tree assistant-node-id chunk)))
-                                                  (funcall conversation-tree-sig nt)
-                                                  (pubsub-emit 'render)))
-                                              (lambda ()
-                                                (let* ((tree (funcall conversation-tree-sig))
-                                                       (node (aref tree assistant-node-id))
-                                                       (message-content (car (nthcdr 3 node))))
-                                                  (setcar (nthcdr 3 node) (string-trim message-content))
-                                                  (funcall conversation-tree-sig tree))
-                                                (funcall streaming-ref nil)
-                                                (pubsub-emit 'render)))))
+                                       (abort (openai-chat-request
+                                               oh-puhn-text-ui-model
+                                               message-history
+                                               (lambda (chunk)
+                                                 (let* ((tree (funcall conversation-tree-sig))
+                                                        (nt (tree-append-chunck tree assistant-node-id chunk)))
+                                                   (funcall conversation-tree-sig nt)
+                                                   (pubsub-emit 'render)))
+                                               (lambda ()
+                                                 (let* ((tree (funcall conversation-tree-sig))
+                                                        (node (aref tree assistant-node-id))
+                                                        (message-content (car (nthcdr 3 node))))
+                                                   (setcar (nthcdr 3 node)
+                                                           (and message-content
+                                                                (string-trim message-content)))
+                                                   (funcall conversation-tree-sig tree))
+                                                 (funcall streaming-ref nil)
+                                                 (pubsub-emit 'render)))))
                                  (funcall conversation-tree-sig new-tree)
                                  (funcall leaf-id-sig assistant-node-id)
                                  (funcall streaming-ref (cons abort assistant-node-id))))))))
     (use-subscribe
      'abort
-      (use-callback (lambda ()
+     (use-callback
+      (lambda ()
         (let ((abort (car (funcall streaming-ref))))
           (when abort
             (funcall abort)
@@ -272,7 +275,7 @@ Returns abort function to cancel the request."
                             (funcall ongenerate inner-parent-id)))))))
          :onleave (lambda (e) (funcall unsub))
          :style (style!*
-                 (margin
+                 (padding
                   (left . 1pt)
                   (right . 1pt)
                   (top . 1pt)
@@ -299,12 +302,11 @@ Returns abort function to cancel the request."
        (reed-hooks-use-drop unsub)
        (esx!
         (div
-         :face (if (funcall hovering-sig) '(:background "gray90") nil)
-
+         :face (if (funcall hovering-sig) 'highlight nil)
          :style (style!* (size
                           (width . 100%)
                           (height . AUTO))
-                         (flex_wrap . 'Wrap))
+                         (flex_direction . 'Column))
          :onhover (lambda (e)
                     (funcall hovering-sig t)
                     (funcall
@@ -424,7 +426,6 @@ Returns a closure to manually close the buffer."
                               (funcall value-sig)
                               (lambda (close-type new-content)
                                 (funcall input-editor-ref nil)
-                                (funcall value-sig new-content)
                                 (if (eq close-type 'submit)
                                     (progn
                                       (funcall value-sig "")
@@ -440,7 +441,7 @@ Returns a closure to manually close the buffer."
                    (top . 1pt)
                    (bottom . 0pt)))
          ({} (if (equal value "")
-                 "<Press 'Enter' here to input...>"
+                 (esx! (span :face 'shadow "<Press 'Enter' here to input...>"))
                value))))))
 
 (defconst oh-puhn-logo
@@ -457,32 +458,18 @@ Returns a closure to manually close the buffer."
 (fc! Wellcome ()
      (esx!
       (div
-       :style (style!* (justify_content . '(Center))
-                (size
-                 (width . 100%)
-                 (height . AUTO)))
-       (div :style (style!*
-                    (align_items . '(Center))
-                    (size
-                     (width . 80pt)
-                     (height . AUTO)))
-            (div :style (style!*
-                          (size
-                           (width . 100%)
-                           (height . AUTO))
-                          (flex_wrap . 'Wrap))
-                 (div :style (style!*
-                              (size
-                               (width . 100%)
-                               (height . AUTO))
-                              (justify_content . '(Center)))
-                 (p ({} oh-puhn-logo)))
-                 (div :style (style!*
-                              (size
-                               (width . 100%)
-                               (height . AUTO))
-                              (justify_content . '(Center)))
-                 (p "How can I help you today?\n" (span "`C-x e` to start writing your first message."))))))))
+       :style (style!*
+               (justify_content . '(Center))
+               (align_items . '(Center))
+               (size
+                (width . 100%)
+                (height . AUTO))
+               (min_size
+                (width . 100%)
+                (height . 25pt))
+               (flex_direction . 'Column))
+       (p ({} oh-puhn-logo))
+       (p "How can I help you today?\n" (span :face 'shadow "`C-x e` to start writing your first message.")))))
 
 (fc! App ()
      (let* ((conversation-tree-sig (use-signal (lambda() (or [] [(0 nil 'user "hello")
@@ -498,34 +485,26 @@ Returns a closure to manually close the buffer."
                        (user-node-id (length conversation-tree)))
                   (funcall conversation-tree-sig
                            (tree-add-child conversation-tree (funcall leaf-id-sig) (list 'user user-msg-content)))
-                  (funcall handle-generate user-node-id))))))
+                  (funcall handle-generate user-node-id)
+                  (pubsub-emit 'render))))))
        (esx!
         (div
          :style (style!*
                  (size
                   (width . 100%)
                   (height . AUTO))
-                 (justify_content . '(Center)))
-         (div
-          :style (style!*
-                  (size
-                   (width . 100%)
-                   (height . AUTO))
-                  (max_size
-                   (width . 80pt)
-                   (height . AUTO))
-                  (flex_wrap . 'Wrap))
-          ({} (if (= 0 (length conversation-tree))
-                  (Wellcome)
-                (mapcar
-                 (lambda (id)
-                   (esx! (ChatMessage
-                          :conversation-tree-sig conversation-tree-sig
-                          :leaf-id-sig leaf-id-sig
-                          :id id
-                          :ongenerate handle-generate)))
-                 message-id-list)))
-          (InputArea :onsubmit handle-submit))))))
+                 (flex_direction . 'Column))
+         ({} (if (= 0 (length conversation-tree))
+                 (esx! (Wellcome))
+               (mapcar
+                (lambda (id)
+                  (esx! (ChatMessage
+                         :conversation-tree-sig conversation-tree-sig
+                         :leaf-id-sig leaf-id-sig
+                         :id id
+                         :ongenerate handle-generate)))
+                message-id-list)))
+         (InputArea :onsubmit handle-submit)))))
 
 
 
@@ -545,8 +524,7 @@ Returns a closure to manually close the buffer."
         (insert content)
         (mapc (lambda (face) (apply #'add-face-text-property face)) faces)
         (goto-char last-post-command-position))
-      ;;(reed-handle-cursor-event app-name 'move last-post-command-position '())
-)))
+      (reed-handle-cursor-event app-name 'move last-post-command-position '()))))
 
 (defun scale-windows-width (width)
   (1- (/ (* width 218) 224))
@@ -615,11 +593,12 @@ Returns a closure to manually close the buffer."
 
 (pubsub-subscribe 'render (lambda () (oh-puhn-text-ui-handle-render)))
 (reed-register-app app-name #'App)
-;(reed-init-tracing)
+(reed-init-tracing)
 
 (defun oh-puhn-text-ui ()
   (interactive)
   (with-current-buffer (get-buffer-create app-name)
+    (buffer-disable-undo)
     (add-to-list 'post-command-hook #'do-stuff-if-moved-post-command)
     (reed-set-width app-name (scale-windows-width last-buffer-width))
     (switch-to-buffer app-name)
