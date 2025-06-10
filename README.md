@@ -6,7 +6,7 @@ Clone and Build reed
 ``` sh
 git clone https://github.com/knilink/reed.el
 cd reed.el
-git checkout 17597a0
+git checkout 7b5cf31
 cargo build --release
 ```
 Clone this repo
@@ -34,9 +34,6 @@ Load the dynamic module and elisp script to emacs.d as well as customize complet
 - `C-r`: `oh-puhn-text-ui-regenerate`, regenerate assistant message at cursor position
 - `C-c C-c`: `oh-puhn-text-ui-abort`, abort streaming
 - `C-x e`: `oh-puhn-text-open-editor` open new message input editor
-
-
-
 - `M-p`: `oh-puhn-hover-previous-message` move cursor to previous chat message
 - `M-n`: `oh-puhn-hover-next-message` move cursor to previous chat message
 
