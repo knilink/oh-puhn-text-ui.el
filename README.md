@@ -34,6 +34,9 @@ Load the dynamic module and elisp script to emacs.d as well as customize complet
 - `C-r`: `oh-puhn-text-ui-regenerate`, regenerate assistant message at cursor position
 - `C-c C-c`: `oh-puhn-text-ui-abort`, abort streaming
 - `C-x e`: `oh-puhn-text-open-editor` open new message input editor
+
+
+
 - `M-p`: `oh-puhn-hover-previous-message` move cursor to previous chat message
 - `M-n`: `oh-puhn-hover-next-message` move cursor to previous chat message
 
@@ -42,4 +45,4 @@ Load the dynamic module and elisp script to emacs.d as well as customize complet
 - `C-g`: abort editing
 
 ## Demo
-[demo.webm](https://github.com/user-attachments/assets/6c05176b-7a75-49d9-bb77-b5a847cc544d)
+[demo.mp4](https://github.com/user-attachments/assets/62660eaa-1969-48f8-8a6e-7e29c6d0ded7)
