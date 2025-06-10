@@ -8,6 +8,7 @@
 (require 'reed-elx)
 (require 'reed-hooks)
 (require 'reed-style)
+(require 'reed-render-helper)
 
 
 (defvar app-name "*oh-puhn-text-ui*")
@@ -188,7 +189,7 @@ Returns abort function to cancel the request."
           (when abort
             (funcall abort)
             (funcall streaming-ref nil))))))
-    (reed-hooks-use-drop
+    (use-drop
      (lambda ()
        (let ((abort (car (funcall streaming-ref))))
          (when abort
@@ -197,11 +198,83 @@ Returns abort function to cancel the request."
     handle-generate))
 
 (defun use-subscribe (event f)
-  (reed-hooks-use-hook-with-cleanup
+  (use-hook-with-cleanup
    (lambda ()
      (pubsub-subscribe event f))
    (lambda (unsub)
      (funcall unsub))))
+
+(defun get-editor-window ()
+    (let* ((window-width (window-width))
+           (window-height (window-height))
+           (split-horizontally (> window-width (* window-height 3))))
+      (if split-horizontally
+          (split-window-right)
+        (split-window-below))))
+
+(defun input-editor (name init-content submit-handler)
+  "Open a dedicated buffer with INIT-CONTENT for editing in a split window.
+Call SUBMIT-HANDLER with the new content on C-x C-s.
+Call SUBMIT-HANDLER with the temporary content when the buffer loses visibility.
+Returns a closure to manually close the buffer."
+  (let* ((edit-buffer (generate-new-buffer name))
+         (original-window (selected-window))
+         (had-multiple-windows (> (length (window-list)) 1))
+         edit-window)
+
+    ;; Create split window with smart direction based on window size
+    (setq edit-window (get-editor-window))
+
+    ;; Switch to the edit window and set up buffer
+    (select-window edit-window)
+    (switch-to-buffer edit-buffer)
+
+    (with-current-buffer edit-buffer
+      (insert init-content)
+      (setq header-line-format "Edit buffer. Press C-x C-s to submit, C-g to cancel.")
+      (use-local-map (make-sparse-keymap))
+
+      (local-set-key (kbd "C-x C-s")
+                     (lambda ()
+                       (interactive)
+                       (let ((content (buffer-string)))
+                         (funcall submit-handler 'submit content)
+                         ;; Clean up window and buffer
+                         (kill-buffer edit-buffer)
+                         (unless had-multiple-windows
+                           (delete-window edit-window))
+                         (select-window original-window))))
+
+      (local-set-key (kbd "C-g")
+                     (lambda ()
+                       (interactive)
+                       (let ((content (buffer-string)))
+                         (funcall submit-handler 'blur content)
+                         ;; Clean up window and buffer
+                         (kill-buffer edit-buffer)
+                         (unless had-multiple-windows
+                           (delete-window edit-window))
+                         (select-window original-window)))))
+
+    ;; Return close function
+    (lambda (&optional action)
+      (message "[action] %s" action)
+      (cond
+       ((eq action 'focus)
+        (unless (window-live-p edit-window)
+          (setq edit-window (get-editor-window)))
+        (select-window edit-window)
+        (switch-to-buffer edit-buffer))
+       (_
+        (when (buffer-live-p edit-buffer)
+          (let ((content (with-current-buffer edit-buffer
+                           (buffer-string))))
+            (kill-buffer edit-buffer)
+            (when (window-live-p edit-window)
+              (unless had-multiple-windows
+                (delete-window edit-window))
+              (select-window original-window))
+            content)))))))
 
 (defun make-spinner-iterator (spinner-frames)
   (let ((i -1)
@@ -213,7 +286,7 @@ Returns abort function to cancel the request."
 (fc! Spinner ()
      (let ((spinner-pos-ref (use-ref (lambda ())))
            (spinner-element-ref (use-ref (lambda ()))))
-       (reed-hooks-use-after-render
+       (use-after-render
         (lambda ()
           (let ((current-buffer-name app-name))
             (run-with-timer
@@ -224,7 +297,7 @@ Returns abort function to cancel the request."
                       (y (cdr location))
                       (width (reed-get-width current-buffer-name)))
                  (funcall spinner-pos-ref (+ (* (1+ width) y) x 1))))))))
-       (reed-hooks-use-hook-with-cleanup
+       (use-hook-with-cleanup
         (lambda ()
           (let ((current-buffer-name app-name)
                 (next-frame (make-spinner-iterator "-\\|/")))
@@ -303,7 +376,7 @@ Returns abort function to cancel the request."
                         (funcall regenerate-listener-ref nil)))))
             (node-ref (use-ref (lambda())))
             (message-content (car (nthcdr 3 node))))
-       (reed-hooks-use-drop unsub)
+       (use-drop unsub)
        (funcall node-ref node) ; TODO workaround for id and index binding issue in lambda onhover handler
        (elx!
         ({} (and (not message-content) (elx! (Spinner))))
@@ -345,7 +418,7 @@ Returns abort function to cancel the request."
                                      (funcall (funcall swipe-listener-ref))
                                      (funcall swipe-listener-ref nil))))))
        (funcall swipe-info-ref (list id current-index siblins)) ; TODO workaround for id and index binding issue in lambda onhover handler
-       (reed-hooks-use-drop unsub)
+       (use-drop unsub)
        (elx!
         (div
          :face (if (funcall hovering-sig) 'highlight nil)
@@ -385,66 +458,7 @@ Returns abort function to cancel the request."
                       :total-swipes (length siblins)
                       :ongenerate ongenerate))))))))
 
-(defun input-editor (name init-content submit-handler)
-  "Open a dedicated buffer with INIT-CONTENT for editing in a split window.
-Call SUBMIT-HANDLER with the new content on C-x C-s.
-Call SUBMIT-HANDLER with the temporary content when the buffer loses visibility.
-Returns a closure to manually close the buffer."
-  (let* ((edit-buffer (generate-new-buffer name))
-         (original-window (selected-window))
-         (had-multiple-windows (> (length (window-list)) 1))
-         edit-window)
 
-    ;; Create split window with smart direction based on window size
-    (let* ((window-width (window-width))
-           (window-height (window-height))
-           (split-horizontally (> window-width (* window-height 3))))
-      (setq edit-window (if split-horizontally
-                            (split-window-right)
-                          (split-window-below))))
-
-    ;; Switch to the edit window and set up buffer
-    (select-window edit-window)
-    (switch-to-buffer edit-buffer)
-
-    (with-current-buffer edit-buffer
-      (insert init-content)
-      (setq header-line-format "Edit buffer. Press C-x C-s to submit, C-g to cancel.")
-      (use-local-map (make-sparse-keymap))
-
-      (local-set-key (kbd "C-x C-s")
-                     (lambda ()
-                       (interactive)
-                       (let ((content (buffer-string)))
-                         (funcall submit-handler 'submit content)
-                         ;; Clean up window and buffer
-                         (kill-buffer edit-buffer)
-                         (unless had-multiple-windows
-                           (delete-window edit-window))
-                         (select-window original-window))))
-
-      (local-set-key (kbd "C-g")
-                     (lambda ()
-                       (interactive)
-                       (let ((content (buffer-string)))
-                         (funcall submit-handler 'blur content)
-                         ;; Clean up window and buffer
-                         (kill-buffer edit-buffer)
-                         (unless had-multiple-windows
-                           (delete-window edit-window))
-                         (select-window original-window)))))
-
-    ;; Return close function
-    (lambda ()
-      (when (buffer-live-p edit-buffer)
-        (let ((content (with-current-buffer edit-buffer
-                         (buffer-string))))
-          (kill-buffer edit-buffer)
-          (when (window-live-p edit-window)
-            (unless had-multiple-windows
-              (delete-window edit-window))
-            (select-window original-window))
-          content)))))
 
 (fc! InputArea (onsubmit)
      (let* ((input-editor-ref (use-ref (lambda ())))
@@ -454,7 +468,7 @@ Returns a closure to manually close the buffer."
                                   (let ((close (funcall input-editor-ref)))
                                     (when close (funcall close)))))
             (element-ref (use-ref (lambda ()))))
-       (reed-hooks-use-drop close-input-editor)
+       (use-drop close-input-editor)
        (use-subscribe
         'edit (lambda ()
                 (when (funcall element-ref)
@@ -463,17 +477,20 @@ Returns a closure to manually close the buffer."
         (p
          :ref element-ref
          :onclick (lambda (e)
-                    (funcall input-editor-ref
-                             (input-editor
-                              "*oh-puhn-text-ui-input*"
-                              (funcall value-sig)
-                              (lambda (close-type new-content)
-                                (funcall input-editor-ref nil)
-                                (if (eq close-type 'submit)
-                                    (progn
-                                      (funcall value-sig "")
-                                      (funcall onsubmit new-content))
-                                  (funcall value-sig new-content))))))
+                    (let ((editor-handle (funcall input-editor-ref)))
+                      (if editor-handle
+                          (funcall editor-handle 'focus)
+                        (funcall input-editor-ref
+                                 (input-editor
+                                  "*oh-puhn-text-ui-input*"
+                                  (funcall value-sig)
+                                  (lambda (close-type new-content)
+                                    (funcall input-editor-ref nil)
+                                    (if (eq close-type 'submit)
+                                        (progn
+                                          (funcall value-sig "")
+                                          (funcall onsubmit new-content))
+                                      (funcall value-sig new-content))))))))
          :onblur (lambda (e) (funcall close-input-editor))
          :style (style!* (display . 'Block)
                          (border
