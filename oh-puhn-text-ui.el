@@ -5,6 +5,11 @@
 (require 'json)
 (require 'url)
 (require 'cl-lib)
+(require 'reed-elx)
+(require 'reed-hooks)
+(require 'reed-style)
+
+
 (defvar app-name "*oh-puhn-text-ui*")
 (defvar pubsub--subscriptions (make-hash-table :test 'eq))
 
@@ -154,24 +159,24 @@ Returns abort function to cancel the request."
                                                                    `(("role" . ,(symbol-name (car node)))
                                                                      ("content" . ,(cadr node))))
                                                                  ) history-ids))
-                                       (abort (openai-chat-request
-                                               oh-puhn-text-ui-model
-                                               message-history
-                                               (lambda (chunk)
-                                                 (let* ((tree (funcall conversation-tree-sig))
-                                                        (nt (tree-append-chunck tree assistant-node-id chunk)))
-                                                   (funcall conversation-tree-sig nt)
-                                                   (pubsub-emit 'render)))
-                                               (lambda ()
-                                                 (let* ((tree (funcall conversation-tree-sig))
-                                                        (node (aref tree assistant-node-id))
-                                                        (message-content (car (nthcdr 3 node))))
-                                                   (setcar (nthcdr 3 node)
-                                                           (and message-content
-                                                                (string-trim message-content)))
-                                                   (funcall conversation-tree-sig tree))
-                                                 (funcall streaming-ref nil)
-                                                 (pubsub-emit 'render)))))
+                                      (abort (openai-chat-request
+                                              oh-puhn-text-ui-model
+                                              message-history
+                                              (lambda (chunk)
+                                                (let* ((tree (funcall conversation-tree-sig))
+                                                       (nt (tree-append-chunck tree assistant-node-id chunk)))
+                                                  (funcall conversation-tree-sig nt)
+                                                  (pubsub-emit 'render)))
+                                              (lambda ()
+                                                (let* ((tree (funcall conversation-tree-sig))
+                                                       (node (aref tree assistant-node-id))
+                                                       (message-content (car (nthcdr 3 node))))
+                                                  (setcar (nthcdr 3 node)
+                                                          (and message-content
+                                                               (string-trim message-content)))
+                                                  (funcall conversation-tree-sig tree))
+                                                (funcall streaming-ref nil)
+                                                (pubsub-emit 'render)))))
                                  (funcall conversation-tree-sig new-tree)
                                  (funcall leaf-id-sig assistant-node-id)
                                  (funcall streaming-ref (cons abort assistant-node-id))))))))
@@ -198,7 +203,47 @@ Returns abort function to cancel the request."
    (lambda (unsub)
      (funcall unsub))))
 
+(defun make-spinner-iterator (spinner-frames)
+  (let ((i -1)
+        (n (length spinner-frames)))
+    (lambda ()
+      (setq i (mod (1+ i) n))
+      (aref spinner-frames i))))
 
+(fc! Spinner ()
+     (let ((spinner-pos-ref (use-ref (lambda ())))
+           (spinner-element-ref (use-ref (lambda ()))))
+       (reed-hooks-use-after-render
+        (lambda ()
+          (let ((current-buffer-name app-name))
+            (run-with-timer
+             0 nil
+             (lambda ()
+               (let* ((location (reed-get-absolut-location current-buffer-name (funcall spinner-element-ref)))
+                      (x (car location))
+                      (y (cdr location))
+                      (width (reed-get-width current-buffer-name)))
+                 (funcall spinner-pos-ref (+ (* (1+ width) y) x 1))))))))
+       (reed-hooks-use-hook-with-cleanup
+        (lambda ()
+          (let ((current-buffer-name app-name)
+                (next-frame (make-spinner-iterator "-\\|/")))
+            (run-with-timer
+             0 0.2
+             (lambda ()
+
+               (let ((spinner-pos (funcall spinner-pos-ref))
+                     (spinner-frame (funcall next-frame)))
+                 (when spinner-pos
+                   (with-current-buffer current-buffer-name
+                     (save-excursion
+                       (goto-char spinner-pos)
+                       (delete-char 1)
+                       (insert spinner-frame)))))))))
+        (lambda (clear-timer)
+          (cancel-timer clear-timer)))
+       (elx!
+        (p :ref spinner-element-ref "/"))))
 
 (fc! UserMessage (conversation-tree-sig leaf-id-sig node index total-swipes ongenerate)
      (let* ((input-editor-ref (use-ref (lambda ())))
@@ -208,7 +253,7 @@ Returns abort function to cancel the request."
                                     (when close (funcall close)))))
             (message-content (car (nthcdr 3 node))))
        (funcall node-ref node)
-       (esx!
+       (elx!
         (div
          :onclick (lambda (e)
                     (funcall input-editor-ref
@@ -241,7 +286,7 @@ Returns abort function to cancel the request."
                    (bottom . 1pt)))
           ({} message-content)))
         ({} (if (> total-swipes 1)
-                (esx! (div :style (style!*
+                (elx! (div :style (style!*
                                    (size
                                     (width . 100%)
                                     (height . AUTO))
@@ -260,7 +305,8 @@ Returns abort function to cancel the request."
             (message-content (car (nthcdr 3 node))))
        (reed-hooks-use-drop unsub)
        (funcall node-ref node) ; TODO workaround for id and index binding issue in lambda onhover handler
-       (esx!
+       (elx!
+        ({} (and (not message-content) (elx! (Spinner))))
         (p
          :onhover (lambda (e)
                     (funcall
@@ -300,13 +346,10 @@ Returns abort function to cancel the request."
                                      (funcall swipe-listener-ref nil))))))
        (funcall swipe-info-ref (list id current-index siblins)) ; TODO workaround for id and index binding issue in lambda onhover handler
        (reed-hooks-use-drop unsub)
-       (esx!
+       (elx!
         (div
          :face (if (funcall hovering-sig) 'highlight nil)
-         :style (style!* (size
-                          (width . 100%)
-                          (height . AUTO))
-                         (flex_direction . 'Column))
+         :style (style!* (display . 'Block))
          :onhover (lambda (e)
                     (funcall hovering-sig t)
                     (funcall
@@ -329,14 +372,14 @@ Returns abort function to cancel the request."
                     (funcall hovering-sig nil)
                     (funcall unsub))
          ({} (if (eq role 'user)
-                 (esx! (UserMessage
+                 (elx! (UserMessage
                         :conversation-tree-sig conversation-tree-sig
                         :leaf-id-sig leaf-id-sig
                         :node node
                         :index current-index
                         :total-swipes (length siblins)
                         :ongenerate ongenerate))
-               (esx! (AssistantMessage
+               (elx! (AssistantMessage
                       :node node
                       :index current-index
                       :total-swipes (length siblins)
@@ -416,7 +459,7 @@ Returns a closure to manually close the buffer."
         'edit (lambda ()
                 (when (funcall element-ref)
                   (reed-emit-event app-name 'click (funcall element-ref) '() nil))))
-       (esx!
+       (elx!
         (p
          :ref element-ref
          :onclick (lambda (e)
@@ -432,16 +475,14 @@ Returns a closure to manually close the buffer."
                                       (funcall onsubmit new-content))
                                   (funcall value-sig new-content))))))
          :onblur (lambda (e) (funcall close-input-editor))
-         :style (style!*(size
-                   (width . 100%)
-                   (height . AUTO))
-                  (border
-                   (left . 0pt)
-                   (right . 0pt)
-                   (top . 1pt)
-                   (bottom . 0pt)))
+         :style (style!* (display . 'Block)
+                         (border
+                          (left . 0pt)
+                          (right . 0pt)
+                          (top . 1pt)
+                          (bottom . 0pt)))
          ({} (if (equal value "")
-                 (esx! (span :face 'shadow "<Press 'Enter' here to input...>"))
+                 (elx! (span :face 'shadow "<Press 'Enter' here to message assistant...>"))
                value))))))
 
 (defconst oh-puhn-logo
@@ -456,7 +497,7 @@ Returns a closure to manually close the buffer."
               |_|")
 
 (fc! Wellcome ()
-     (esx!
+     (elx!
       (div
        :style (style!*
                (justify_content . '(Center))
@@ -487,7 +528,7 @@ Returns a closure to manually close the buffer."
                            (tree-add-child conversation-tree (funcall leaf-id-sig) (list 'user user-msg-content)))
                   (funcall handle-generate user-node-id)
                   (pubsub-emit 'render))))))
-       (esx!
+       (elx!
         (div
          :style (style!*
                  (size
@@ -495,10 +536,10 @@ Returns a closure to manually close the buffer."
                   (height . AUTO))
                  (flex_direction . 'Column))
          ({} (if (= 0 (length conversation-tree))
-                 (esx! (Wellcome))
+                 (elx! (Wellcome))
                (mapcar
                 (lambda (id)
-                  (esx! (ChatMessage
+                  (elx! (ChatMessage
                          :conversation-tree-sig conversation-tree-sig
                          :leaf-id-sig leaf-id-sig
                          :id id
@@ -507,30 +548,41 @@ Returns a closure to manually close the buffer."
          (InputArea :onsubmit handle-submit)))))
 
 
-
 (defvar last-post-command-position 1)
 
 (defvar last-buffer-width (window-width))
 
 (defun oh-puhn-text-ui-handle-render ()
   (with-current-buffer (get-buffer-create app-name)
-    (let* ((res (reed-render-immediate app-name))
+    (let* ((old-pos (window-start))
+           (res (reed-render-immediate app-name))
+           (duration nil)
            (content (car res))
            (faces (cdr res)))
-      (with-silent-modifications
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (set-text-properties (point-min) (point-max) nil))
-        (insert content)
-        (mapc (lambda (face) (apply #'add-face-text-property face)) faces)
-        (goto-char last-post-command-position))
-      (reed-handle-cursor-event app-name 'move last-post-command-position '()))))
+      (when res
+        (with-silent-modifications
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            ;; (set-text-properties (point-min) (point-max) nil)
+            )
+          (insert content)
+          ;;(message "[edit-instruction] %s" edit-instruction)
+          ;; (mapc (lambda (inst)
+          ;;         (delete-region (1+ (car inst)) (1+ (cadr inst)))
+          ;;         (goto-char (1+ (car inst)))
+          ;;         (insert (caddr inst)))
+          ;;       edit-instruction)
+          (mapc (lambda (face) (apply #'add-face-text-property face)) faces)
+          (goto-char last-post-command-position)
+          (set-window-start (selected-window) old-pos t))
+        (reed-handle-cursor-event app-name 'move last-post-command-position '())))))
 
 (defun scale-windows-width (width)
   (1- (/ (* width 218) 224))
   width)
 
-
+(setq redisplay-dont-pause t)
+(setq redisplay-skip-fontification-on-input t)
 (defun do-stuff-if-moved-post-command ()
   (when (equal app-name (buffer-name (current-buffer)))
     (let ((should-render nil))
@@ -549,31 +601,37 @@ Returns a closure to manually close the buffer."
 
 (defun oh-puhn-text-ui-handle-click ()
   (interactive)
+  (message "[oh-puhn] Click at position %s" last-post-command-position)
   (reed-handle-cursor-event app-name 'click last-post-command-position '())
   (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-ui-swipe-left ()
   (interactive)
+  (message "[oh-puhn] Swiping left")
   (pubsub-emit 'swipe 'left)
   (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-ui-swipe-right ()
   (interactive)
+  (message "[oh-puhn] Swiping right")
   (pubsub-emit 'swipe 'right)
   (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-ui-regenerate ()
   (interactive)
+  (message "[oh-puhn] Regenerating content...")
   (pubsub-emit 'regenerate)
   (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-ui-abort ()
   (interactive)
+  (message "[oh-puhn] Aborting streaming")
   (pubsub-emit 'abort)
   (oh-puhn-text-ui-handle-render))
 
 (defun oh-puhn-text-open-editor ()
   (interactive)
+  (message "[oh-puhn] Opening editor")
   (pubsub-emit 'edit)
   (with-current-buffer app-name
     (do-stuff-if-moved-post-command)))
@@ -598,6 +656,7 @@ Returns a closure to manually close the buffer."
 (defun oh-puhn-text-ui ()
   (interactive)
   (with-current-buffer (get-buffer-create app-name)
+    ;(setq buffer-read-only t)
     (buffer-disable-undo)
     (add-to-list 'post-command-hook #'do-stuff-if-moved-post-command)
     (reed-set-width app-name (scale-windows-width last-buffer-width))
