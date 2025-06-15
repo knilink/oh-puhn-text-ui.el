@@ -14,14 +14,6 @@
 (defvar app-name "*oh-puhn-text-ui*")
 (defvar pubsub--subscriptions (make-hash-table :test 'eq))
 
-(defcustom oh-puhn-text-ui-model "gemma3:27b"
-  "The LLM model to use for completions.
-Common values might include \"gpt-4\", \"gpt-3.5-turbo\", \"claude-2\", etc."
-  :type 'string
-  :group 'oh-puhn-text-ui-settings
-  :safe 'stringp)
-
-
 (defcustom oh-puhn-text-ui-completion-endpoint "http://localhost:11434/v1/chat/completions"
   "The API endpoint URL for LLM completions."
   :type 'string
@@ -49,10 +41,10 @@ Common values might include \"gpt-4\", \"gpt-3.5-turbo\", \"claude-2\", etc."
     (apply (car subscription) args)))
 
 
-(defun openai-chat-request (model messages handle-data handle-done)
+(defun oh-puhn-text-ui-chat-completion (model messages handle-data handle-done)
   "Start OpenAI stream request with PAYLOAD and HANDLE-DATA callback.
 Returns abort function to cancel the request."
-  ;; (message "[openai-chat-request] %s" messages)
+  ;; (message "[oh-puhn-text-ui-chat-completion] %s" messages)
   (let* ((data (json-encode
                 `(("model" . ,model)
                   ("messages" . ,messages)
@@ -91,6 +83,58 @@ Returns abort function to cancel the request."
        (when (memq (process-status proc) '(exit signal))
          (funcall handle-done))))
     abort-fn))
+
+(defcustom oh-puhn-text-ui-selected-model nil
+  "Currently selected model for oh-puhn-text-ui.
+This value is automatically saved across Emacs sessions."
+  :type 'string
+  :group 'oh-puhn-text-ui-settings)
+
+(defun oh-puhn-text-ui-list-models (handle-response)
+  "List available models from OpenAI-compatible endpoint.
+HANDLE-RESPONSE is called with the parsed models data when request completes.
+Returns abort function to cancel the request."
+  (let* ((args `("-X" "GET"
+                 "http://localhost:11434/v1/models"
+                 "-H" "Content-Type: application/json"))
+         (process (apply #'start-process `("list-models" "*models*" "curl" ,@args)))
+         (buffer "")
+         (abort-fn (lambda ()
+                     (when (process-live-p process)
+                       (kill-process process)
+                       (message "Models request aborted")))))
+
+    (set-process-filter
+     process
+     (lambda (proc output)
+       (setq buffer (concat buffer output))))
+
+    (set-process-sentinel
+     process
+     (lambda (proc event)
+       (when (memq (process-status proc) '(exit signal))
+         (if (zerop (process-exit-status proc))
+             (ignore-errors
+               (let* ((json-object (json-parse-string buffer :object-type 'alist))
+                      (models (alist-get 'data json-object)))
+                 (funcall handle-response (mapcar (lambda (model) (alist-get 'id model)) models))))
+           (message "Failed to fetch models: %s" buffer)))))
+    abort-fn))
+
+(defun oh-puhn-text-ui-select-model (model-list &optional current-model)
+  "Select a model from MODEL-LIST using minibuffer completion.
+If CURRENT-MODEL is provided, it will be highlighted as the default.
+Returns the selected model name."
+  (let* ((default-model (car (member current-model model-list)))
+         (prompt (if default-model
+                     (format "Select model (default %s): " default-model)
+                   "Select model: "))
+         (collection (mapcar (lambda (model)
+                               (if (and default-model (string= model default-model))
+                                   (propertize model 'face 'highlight)
+                                 model))
+                             model-list)))
+    (completing-read prompt collection nil t nil nil default-model)))
 
 
 ; (defvar tree [])
@@ -172,8 +216,8 @@ Returns abort function to cancel the request."
                                                                    `(("role" . ,(symbol-name (car node)))
                                                                      ("content" . ,(cadr node))))
                                                                  ) history-ids))
-                                      (abort (openai-chat-request
-                                              oh-puhn-text-ui-model
+                                      (abort (oh-puhn-text-ui-chat-completion
+                                              oh-puhn-text-ui-selected-model
                                               message-history
                                               (lambda (chunk)
                                                 (let* ((tree (funcall conversation-tree-sig))
@@ -734,6 +778,22 @@ Returns a closure to manually close the buffer."
   (message "[oh-puhn] Next message")
   (pubsub-emit 'hover-message-event 'next))
 
+(defun oh-puhn-text-ui-choose-model ()
+  "Interactively choose a model from available models.
+If CURRENT-MODEL is provided, it will be highlighted as default.
+Otherwise uses the saved selected model."
+  (interactive)
+  (oh-puhn-text-ui-list-models
+   (lambda (models-names)
+     (let* ((default-model oh-puhn-text-ui-selected-model)
+            (selected-model (oh-puhn-text-ui-select-model models-names default-model)))
+       (setq oh-puhn-text-ui-selected-model selected-model)
+       (customize-save-variable 'oh-puhn-text-ui-selected-model selected-model)
+       (message "Selected model: %s (saved)" selected-model)
+       (with-current-buffer app-name
+         (setq header-line-format selected-model))
+       selected-model))))
+
 
 (defun oh-puhn-text-ui-key-binding ()
   (with-current-buffer app-name
@@ -745,6 +805,7 @@ Returns a closure to manually close the buffer."
     (local-set-key (kbd "C-x e") #'oh-puhn-text-open-editor)
     (local-set-key (kbd "M-p") #'oh-puhn-hover-previous-message)
     (local-set-key (kbd "M-n") #'oh-puhn-hover-next-message)
+    (local-set-key (kbd "C-c m") #'oh-puhn-text-ui-choose-model)
     ;;(local-set-key [down-mouse-1] #'oh-puhn-text-ui-handle-click)
     ))
 
@@ -756,7 +817,8 @@ Returns a closure to manually close the buffer."
 (defun oh-puhn-text-ui ()
   (interactive)
   (with-current-buffer (get-buffer-create app-name)
-    ;(setq buffer-read-only t)
+    ;;(setq buffer-read-only t)
+    (setq header-line-format (or oh-puhn-text-ui-selected-model "No model selected, Press C-c m to select model."))
     (buffer-disable-undo)
     (add-to-list 'post-command-hook #'do-stuff-if-moved-post-command)
     (reed-set-width app-name (scale-windows-width last-buffer-width))
@@ -765,6 +827,6 @@ Returns a closure to manually close the buffer."
     (setq-local truncate-lines t)
     (oh-puhn-text-ui-handle-render)))
 
-;; (oh-puhn-text-ui)
+(oh-puhn-text-ui)
 (provide 'oh-puhn-text-ui)
 ;;; oh-puhn-text-ui.el ends here
