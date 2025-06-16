@@ -205,38 +205,39 @@ Returns the selected model name."
 
 (defun use-chat-request (conversation-tree-sig leaf-id-sig)
   (let* ((streaming-ref (use-ref (lambda ())))
-         (handle-generate (use-callback
-                           (lambda (user-node-id)
-                             (unless (funcall streaming-ref)
-                               (let* ((new-tree (tree-add-child (funcall conversation-tree-sig) user-node-id (list 'assistant nil)))
-                                      (assistant-node-id (1- (length new-tree)))
-                                      (history-ids (tree-get-chat-id-history-from-leaf new-tree user-node-id))
-                                      (message-history (mapcar (lambda (id)
-                                                                 (let ((node (cddr (aref new-tree id))))
-                                                                   `(("role" . ,(symbol-name (car node)))
-                                                                     ("content" . ,(cadr node))))
-                                                                 ) history-ids))
-                                      (abort (oh-puhn-text-ui-chat-completion
-                                              oh-puhn-text-ui-selected-model
-                                              message-history
-                                              (lambda (chunk)
-                                                (let* ((tree (funcall conversation-tree-sig))
-                                                       (nt (tree-append-chunck tree assistant-node-id chunk)))
-                                                  (funcall conversation-tree-sig nt)
-                                                  (pubsub-emit 'render)))
-                                              (lambda ()
-                                                (let* ((tree (funcall conversation-tree-sig))
-                                                       (node (aref tree assistant-node-id))
-                                                       (message-content (car (nthcdr 3 node))))
-                                                  (setcar (nthcdr 3 node)
-                                                          (and message-content
-                                                               (string-trim message-content)))
-                                                  (funcall conversation-tree-sig tree))
-                                                (funcall streaming-ref nil)
-                                                (pubsub-emit 'render)))))
-                                 (funcall conversation-tree-sig new-tree)
-                                 (funcall leaf-id-sig assistant-node-id)
-                                 (funcall streaming-ref (cons abort assistant-node-id))))))))
+         (handle-generate
+          (use-callback
+           (lambda (user-node-id)
+             (unless (funcall streaming-ref)
+               (let* ((new-tree (tree-add-child (funcall conversation-tree-sig) user-node-id (list 'assistant nil)))
+                      (assistant-node-id (1- (length new-tree)))
+                      (history-ids (tree-get-chat-id-history-from-leaf new-tree user-node-id))
+                      (message-history (mapcar (lambda (id)
+                                                 (let ((node (cddr (aref new-tree id))))
+                                                   `(("role" . ,(symbol-name (car node)))
+                                                     ("content" . ,(cadr node))))
+                                                 ) history-ids))
+                      (abort (oh-puhn-text-ui-chat-completion
+                              oh-puhn-text-ui-selected-model
+                              message-history
+                              (lambda (chunk)
+                                (let* ((tree (funcall conversation-tree-sig))
+                                       (nt (tree-append-chunck tree assistant-node-id chunk)))
+                                  (funcall conversation-tree-sig nt)
+                                  (pubsub-emit 'render)))
+                              (lambda ()
+                                (let* ((tree (funcall conversation-tree-sig))
+                                       (node (aref tree assistant-node-id))
+                                       (message-content (car (nthcdr 3 node))))
+                                  (setcar (nthcdr 3 node)
+                                          (and message-content
+                                               (string-trim message-content)))
+                                  (funcall conversation-tree-sig tree))
+                                (funcall streaming-ref nil)
+                                (pubsub-emit 'render)))))
+                 (funcall conversation-tree-sig new-tree)
+                 (funcall leaf-id-sig assistant-node-id)
+                 (funcall streaming-ref (cons abort assistant-node-id))))))))
     (use-subscribe
      'abort-event
      (lambda ()
@@ -262,13 +263,20 @@ Returns the selected model name."
     (lambda ()
       (funcall timer-ref (run-with-timer 0 nil f)))))
 
-(defun get-editor-window ()
-    (let* ((window-width (window-width))
-           (window-height (window-height))
-           (split-horizontally (> window-width (* window-height 3))))
-      (if split-horizontally
-          (split-window-right)
-        (split-window-below))))
+(defun oh-puhn--close-input-editor (input-editor-buffer)
+  (seq-do
+   (lambda (win)
+     (when (window-parameter win 'oh-puhn-text-ui-input) (delete-window win)))
+   (window-list))
+  (kill-buffer input-editor-buffer))
+
+(defun oh-puhn--open-input-editor (input-editor-buffer)
+  (select-window
+   (display-buffer
+    (get-buffer-create input-editor-buffer)
+    '(display-buffer-pop-up-window
+      (inhibit-same-window . t)
+      (window-parameters (oh-puhn-text-ui-input . t))))))
 
 (defun oh-puhn--input-editor (name init-content submit-handler)
   "Open a dedicated buffer with INIT-CONTENT for editing in a split window.
@@ -281,11 +289,10 @@ Returns a closure to manually close the buffer."
          edit-window)
 
     ;; Create split window with smart direction based on window size
-    (setq edit-window (get-editor-window))
+    (oh-puhn--open-input-editor edit-buffer)
 
     ;; Switch to the edit window and set up buffer
-    (select-window edit-window)
-    (switch-to-buffer edit-buffer)
+                                        ;(switch-to-buffer edit-buffer)
 
     (with-current-buffer edit-buffer
       (when oh-puhn-text-ui-input-editor-default-mode (funcall oh-puhn-text-ui-input-editor-default-mode))
@@ -296,42 +303,33 @@ Returns a closure to manually close the buffer."
       (local-set-key (kbd "C-x C-s")
                      (lambda ()
                        (interactive)
-                       (let ((content (buffer-string)))
+                       (let ((content (buffer-string))
+                             (edit-window (get-buffer-window edit-buffer)))
                          (funcall submit-handler 'submit content)
                          ;; Clean up window and buffer
-                         (kill-buffer edit-buffer)
-                         (unless had-multiple-windows
-                           (delete-window edit-window))
-                         (select-window original-window))))
+                         (select-window (get-buffer-window app-name t))
+                         (oh-puhn--close-input-editor edit-buffer))))
 
       (local-set-key (kbd "C-g")
                      (lambda ()
                        (interactive)
-                       (let ((content (buffer-string)))
+                       (let ((content (buffer-string))
+                             (edit-window (get-buffer-window edit-buffer)))
                          (funcall submit-handler 'blur content)
                          ;; Clean up window and buffer
-                         (kill-buffer edit-buffer)
-                         (unless had-multiple-windows
-                           (delete-window edit-window))
-                         (select-window original-window)))))
-
+                         (select-window (get-buffer-window app-name t))
+                         (oh-puhn--close-input-editor edit-buffer)))))
     ;; Return close function
     (lambda (&optional action)
       (cond
        ((eq action 'focus)
-        (unless (window-live-p edit-window)
-          (setq edit-window (get-editor-window)))
-        (select-window edit-window)
-        (switch-to-buffer edit-buffer))
+        (oh-puhn--open-input-editor edit-buffer))
        (t
         (when (buffer-live-p edit-buffer)
           (let ((content (with-current-buffer edit-buffer
                            (buffer-string))))
-            (kill-buffer edit-buffer)
-            (when (window-live-p edit-window)
-              (unless had-multiple-windows
-                (delete-window edit-window))
-              (select-window original-window))
+            (select-window (get-buffer-window app-name t))
+            (oh-puhn--close-input-editor edit-buffer)
             content)))))))
 
 (defun make-spinner-iterator (spinner-frames)
@@ -392,7 +390,6 @@ Returns a closure to manually close the buffer."
        (elx!
         (div
          :onclick (lambda (e)
-                    (message "[UserMessage] onclick")
                     (funcall
                      input-editor-ref
                      (oh-puhn--input-editor
@@ -457,15 +454,13 @@ Returns a closure to manually close the buffer."
         ({} (and (not message-content) (elx! (Spinner))))
         (p
          :onclick (lambda (e)
-                    (message "[click] ass")
                     (funcall
                      input-editor-ref
                      (oh-puhn--input-editor
                       "*oh-puhn-text-ui-assistant-message*"
                       (funcall message-content-ref)
                       (lambda (&rest args)
-                        (funcall input-editor-ref nil))))
-                    (message "[click] end"))
+                        (funcall input-editor-ref nil)))))
          :onhover (lambda (e) (funcall hovering-ref t))
          :onleave (lambda (e) (funcall hovering-ref nil))
          :onblur (lambda (e)
@@ -709,9 +704,7 @@ Returns a closure to manually close the buffer."
           (set-window-start (selected-window) old-pos t))
         (reed-handle-cursor-event app-name 'move last-post-command-position '())))))
 
-(defun scale-windows-width (width)
-  (1- (/ (* width 218) 224))
-  width)
+(defun scale-windows-width (width) width)
 
 (setq redisplay-dont-pause t)
 (setq redisplay-skip-fontification-on-input t)
@@ -818,6 +811,7 @@ Otherwise uses the saved selected model."
   (interactive)
   (with-current-buffer (get-buffer-create app-name)
     ;;(setq buffer-read-only t)
+    (display-line-numbers-mode -1)
     (setq header-line-format (or oh-puhn-text-ui-selected-model "No model selected, Press C-c m to select model."))
     (buffer-disable-undo)
     (add-to-list 'post-command-hook #'do-stuff-if-moved-post-command)
@@ -827,6 +821,6 @@ Otherwise uses the saved selected model."
     (setq-local truncate-lines t)
     (oh-puhn-text-ui-handle-render)))
 
-(oh-puhn-text-ui)
+;; (oh-puhn-text-ui)
 (provide 'oh-puhn-text-ui)
 ;;; oh-puhn-text-ui.el ends here
