@@ -44,7 +44,6 @@
 (defun oh-puhn-text-ui-chat-completion (model messages handle-data handle-done)
   "Start OpenAI stream request with PAYLOAD and HANDLE-DATA callback.
 Returns abort function to cancel the request."
-  ;; (message "[oh-puhn-text-ui-chat-completion] %s" messages)
   (let* ((data (json-encode
                 `(("model" . ,model)
                   ("messages" . ,messages)
@@ -117,8 +116,7 @@ Returns abort function to cancel the request."
              (ignore-errors
                (let* ((json-object (json-parse-string buffer :object-type 'alist))
                       (models (alist-get 'data json-object)))
-                 (funcall handle-response (mapcar (lambda (model) (alist-get 'id model)) models))))
-           (message "Failed to fetch models: %s" buffer)))))
+                 (funcall handle-response (mapcar (lambda (model) (alist-get 'id model)) models))))))))
     abort-fn))
 
 (defun oh-puhn-text-ui-select-model (model-list &optional current-model)
@@ -136,6 +134,84 @@ Returns the selected model name."
                              model-list)))
     (completing-read prompt collection nil t nil nil default-model)))
 
+
+(defun oh-puhn-text-ui--parse-response (text)
+  "Parse text containing <think> blocks and code blocks.
+Returns a list of parsed blocks with their properties."
+  (let ((lines (split-string text "\n"))
+        (blocks '())
+        (current-block nil)
+        (line-number 0))
+
+    (dolist (line lines)
+      (setq line-number (1+ line-number))
+
+      (cond
+       ;; Check for <think> opening tag
+       ((string-match "^\\s-*<think>\\s-*$" line)
+        (when current-block
+          (push current-block blocks))
+        (setq current-block
+              (list :type 'think
+                      :start-line line-number
+                      :closed nil
+                      :content nil)))
+
+       ;; Check for </think> closing tag
+       ((string-match "^\\s-*</think>\\s-*$" line)
+        (when (and current-block (eq (plist-get current-block :type) 'think))
+          (plist-put current-block :closed t)
+          (plist-put current-block :end-line line-number)
+          (push current-block blocks)
+          (setq current-block nil)))
+
+       ;; Check for code block closing first
+       ((and current-block
+             (eq (plist-get current-block :type) 'code)
+             (string-match "^\\s-*```\\s-*$" line))
+        (plist-put current-block :closed t)
+        (plist-put current-block :end-line line-number)
+        (push current-block blocks)
+        (setq current-block nil))
+
+       ;; Check for code block opening (```language or ```)
+       ((and (string-match "^\\(\\s-*\\)```\\([^`\n]*\\)\\s-*$" line)
+             (not (eq (plist-get current-block :type) 'think)))
+
+        (when current-block
+          (push current-block blocks))
+
+        (let ((indentation (length (match-string 1 line)))
+              (language (match-string 2 line)))
+          (setq current-block
+                (list :type 'code
+                      :start-line line-number
+                      :closed nil
+                      :indentation indentation
+                      :language (if (string= language "") nil language)
+                      :content nil))))
+       ;; Add content to current block
+       (current-block
+        (let* ((content (plist-get current-block :content))
+               (indentation (plist-get current-block :indentation))
+               (trimed-line (if indentation (substring line (min indentation (length line))) line)))
+
+          (plist-put current-block :content
+                     (if content
+                         (concat content "\n" trimed-line)
+                       trimed-line))))
+
+       ;; Regular content outside blocks
+       (t
+        (setq current-block (list :type 'text :content line))))
+      )
+
+    ;; Handle unclosed block at end
+    (when current-block
+      (push current-block blocks))
+
+    ;; Return blocks in original order
+    (reverse blocks)))
 
 ; (defvar tree [])
 
@@ -428,6 +504,62 @@ Returns a closure to manually close the buffer."
                            (justify_content . '(End)))
                    (p ({} (format "<%s/%s>" (1+ index) total-swipes))))))))))
 
+(fc! ThinkingBlock (content thinking)
+     (let ((collapsed-sig (use-signal (lambda ())))
+           (hovering-ref (use-ref (lambda ()))))
+       (use-subscribe
+        'tab-event
+        (lambda ()
+          (when (funcall hovering-ref)
+            (funcall collapsed-sig (not (funcall collapsed-sig))))))
+       (elx!
+        (div
+         :onhover (lambda (e) (funcall hovering-ref t))
+         :onleave (lambda (e) (funcall hovering-ref nil))
+         :face 'shadow
+         :style (style!*
+                 (flex_direction . 'Column)
+                 (align_items . '(Stretch)))
+         (p
+          :face 'header-line
+          "thinking..."
+          ({} (if (funcall collapsed-sig) "⌃" "⌄")))
+         ({} (and
+              (not (funcall collapsed-sig))
+              (elx! (p
+                     :style (style!*
+                             (border
+                              (left . 1pt)
+                              (right . ZERO)
+                              (top . ZERO)
+                              (bottom . ZERO)))
+                     ({} content)))))))))
+
+(fc! CodeBlock (content language)
+     (elx!
+      (div
+       :style (style!*
+               (flex_direction . 'Column)
+               (align_items . '(Stretch)))
+       (p
+        :style (style!*
+                (padding
+                 (left . 1pt)
+                 (right . 1pt)
+                 (top . 0pt)
+                 (bottom . 0pt)))
+        :face 'header-line
+        ({} language))
+       (p
+        :style (style!*
+                (padding
+                 (left . 1pt)
+                 (right . 1pt)
+                 (top . 0pt)
+                 (bottom . 0pt)))
+        :face 'fringe
+        ({} content)))))
+
 (fc! AssistantMessage (node index total-swipes ongenerate)
      (let* ((regenerate-listener-ref (use-ref (lambda ())))
             (node-ref (use-ref (lambda ())))
@@ -452,7 +584,7 @@ Returns a closure to manually close the buffer."
             (when close-editor (funcall close-editor)))))
        (elx!
         ({} (and (not message-content) (elx! (Spinner))))
-        (p
+        (div
          :onclick (lambda (e)
                     (funcall
                      input-editor-ref
@@ -468,13 +600,29 @@ Returns a closure to manually close the buffer."
                      (when close-editor (funcall close-editor)))
                    (funcall input-editor-ref nil))
          :style (style!*
+                 (flex_direction . 'Column)
+                 (align_items . '(Stretch))
                  (padding
                   (left . 1pt)
                   (right . 1pt)
                   (top . 1pt)
                   (bottom . 0pt)))
-         ({} message-content)
-         ({} (if (> total-swipes 1) (format "\n<%s/%s>" (1+ index) total-swipes) nil))))))
+         ({} (mapcar
+              (lambda (block)
+                (let ((block-type (plist-get block :type))
+                      (block-content (plist-get block :content)))
+                  (cond
+                   ((eq block-type 'think)
+                    (elx! (ThinkingBlock
+                           :content block-content
+                           :thinking (not (plist-get block :closed)))))
+                   ((eq block-type 'code)
+                    (elx! (CodeBlock
+                           :language (plist-get block :language)
+                           :content block-content)))
+                   (t (elx! (p ({} block-content)))))))
+              (and message-content (oh-puhn-text-ui--parse-response message-content))))
+         (p ({} (if (> total-swipes 1) (format "\n<%s/%s>" (1+ index) total-swipes) nil)))))))
 
 (fc! ChatMessage (ref conversation-tree-sig leaf-id-sig id ongenerate onhover onleave)
      (let* ((conversation-tree (funcall conversation-tree-sig))
@@ -524,7 +672,8 @@ Returns a closure to manually close the buffer."
                       :node node
                       :index current-index
                       :total-swipes (length siblins)
-                      :ongenerate ongenerate))))))))
+                      :ongenerate ongenerate)))))
+        )))
 
 
 (fc! InputArea (onsubmit)
@@ -730,6 +879,12 @@ Returns a closure to manually close the buffer."
   (reed-handle-cursor-event app-name 'click last-post-command-position '())
   (oh-puhn-text-ui-handle-render))
 
+(defun oh-puhn-text-ui-handle-tab ()
+  (interactive)
+  (message "[oh-puhn] Click at position %s" last-post-command-position)
+  (pubsub-emit 'tab-event)
+  (oh-puhn-text-ui-handle-render))
+
 (defun oh-puhn-text-ui-swipe-left ()
   (interactive)
   (message "[oh-puhn] Swiping left")
@@ -791,6 +946,7 @@ Otherwise uses the saved selected model."
 (defun oh-puhn-text-ui-key-binding ()
   (with-current-buffer app-name
     (local-set-key (kbd "RET") #'oh-puhn-text-ui-handle-click)
+    (local-set-key (kbd "<tab>") #'oh-puhn-text-ui-handle-tab)
     (local-set-key (kbd "[") #'oh-puhn-text-ui-swipe-left)
     (local-set-key (kbd "]") #'oh-puhn-text-ui-swipe-right)
     (local-set-key (kbd "C-r") #'oh-puhn-text-ui-regenerate)
@@ -805,7 +961,7 @@ Otherwise uses the saved selected model."
 
 (pubsub-subscribe 'render (lambda () (oh-puhn-text-ui-handle-render)))
 (reed-register-app app-name #'App)
-(reed-init-tracing)
+;; (reed-init-tracing)
 
 (defun oh-puhn-text-ui ()
   (interactive)
