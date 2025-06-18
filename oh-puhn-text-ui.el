@@ -41,41 +41,26 @@
     (apply (car subscription) args)))
 
 
-(defun oh-puhn-text-ui-chat-completion (model messages handle-data handle-done)
-  "Start OpenAI stream request with PAYLOAD and HANDLE-DATA callback.
-Returns abort function to cancel the request."
-  (let* ((data (json-encode
-                `(("model" . ,model)
-                  ("messages" . ,messages)
-                  ("stream" . t))))
-         (args `("-X" "POST"
-                 ,oh-puhn-text-ui-completion-endpoint
-                 "-H" "Content-Type: application/json"
-                 "-d" ,data))
-         (process (apply #'start-process `("openai-stream" "*openai*" "curl" ,@args)))
+(defun oh-puhn-text-ui--stream-request (endpoint payload map-line handle-json handle-done)
+  (let* ((data (json-encode payload))
+         (args `("-X" "POST" ,endpoint "-H" "Content-Type: application/json" "-d" ,data))
+         (process (apply #'start-process `("curl-stream" "*curl*" "curl" ,@args)))
          (buffer "")
          (abort-fn (lambda ()
                      (when (process-live-p process)
-                       (kill-process process)
-                       (message "Request aborted")))))
-
+                       (kill-process process)))))
     (set-process-filter
      process
      (lambda (proc output)
        (setq buffer (concat buffer output))
        (while (string-match "\n" buffer)
-         (let ((line (substring buffer 0 (match-beginning 0)))
-               (rest (substring buffer (match-end 0))))
-           (setq buffer rest)
-           (when (string-prefix-p "data: " line)
-             (let ((json-str (substring line 6)))
+         (let ((line (substring buffer 0 (match-beginning 0))))
+           (setq buffer (substring buffer (match-end 0)))
+           (let ((json-str (funcall map-line line)))
+             (when json-str
                (ignore-errors
-                 (let* ((json-object (json-parse-string json-str :object-type 'alist))
-                        (content (alist-get 'content
-                                             (alist-get 'delta
-                                                         (elt (alist-get 'choices json-object) 0)))))
-                   (when content
-                     (funcall handle-data content))))))))))
+                 (let ((json-object (json-parse-string json-str :object-type 'alist)))
+                   (funcall handle-json json-object)))))))))
     (set-process-sentinel
      process
      (lambda (proc event)
@@ -83,7 +68,35 @@ Returns abort function to cancel the request."
          (funcall handle-done))))
     abort-fn))
 
-(defcustom oh-puhn-text-ui-selected-model nil
+(defun oh-puhn-text-ui-chat-completion-openai (model messages handle-data handle-done)
+  (oh-puhn-text-ui--stream-request
+   oh-puhn-text-ui-completion-endpoint
+   `(("model" . ,model) ("messages" . ,messages) ("stream" . t))
+   (lambda (line)
+     (when (string-prefix-p "data: " line)
+       (substring line 6)))
+   (lambda (json-object)
+     (let ((content (alist-get 'content (alist-get 'delta (elt (alist-get 'choices json-object) 0)))))
+       (when content (funcall handle-data content))))
+   handle-done))
+
+(defun oh-puhn-text-ui-chat-completion-ollama (model messages handle-data handle-done)
+  (oh-puhn-text-ui--stream-request
+   "http://localhost:11434/api/chat"
+   `(("model" . ,model)
+     ("messages" . ,messages)
+     ("stream" . t)
+     ("keep_alive" . -1)
+     ("options" ("num_ctx" . 8192)))
+   #'identity
+   (lambda (json-object)
+     (let ((content (alist-get 'content (alist-get 'message json-object))))
+       (when content (funcall handle-data content))))
+   handle-done))
+
+(defalias 'oh-puhn-text-ui-chat-completion 'oh-puhn-text-ui-chat-completion-ollama)
+
+(defcustom oh-puhn-text-ui-selected-model "gemma3:27b" ; "qwq:32b-q4_K_M" ; nil
   "Currently selected model for oh-puhn-text-ui.
 This value is automatically saved across Emacs sessions."
   :type 'string
@@ -135,7 +148,32 @@ Returns the selected model name."
     (completing-read prompt collection nil t nil nil default-model)))
 
 
-(defun oh-puhn-text-ui--parse-response (text)
+(defun oh-puhn-text-ui--split-response (text)
+  "Split content by think blocks.
+Returns (thinking-content . remaining-content):
+- (\"...thinking...\" . nil) - unclosed think block
+- (\"...thought...\" . \"\") - closed think block
+- (nil . \"...\") - no thinking block"
+  (let* ((open-tag "<think>\n")
+         (close-tag "</think>\n")
+         (open-len (length open-tag))
+         (close-len (length close-tag))
+         (think-start (string-match open-tag text))
+         (think-end nil))
+
+    (if think-start
+        (progn
+          (setq think-end (string-match close-tag text (+ think-start open-len)))
+          (if think-end
+              ;; Closed think block
+              (cons (substring text (+ think-start open-len) think-end)
+                    (substring text (+ think-end close-len)))
+            ;; Unclosed think block
+            (cons (substring text (+ think-start open-len)) nil)))
+      ;; No think block
+      (cons nil text))))
+
+(defun oh-puhn-text-ui--parse-markdown (text)
   "Parse text containing <think> blocks and code blocks.
 Returns a list of parsed blocks with their properties."
   (let ((lines (split-string text "\n"))
@@ -147,24 +185,6 @@ Returns a list of parsed blocks with their properties."
       (setq line-number (1+ line-number))
 
       (cond
-       ;; Check for <think> opening tag
-       ((string-match "^\\s-*<think>\\s-*$" line)
-        (when current-block
-          (push current-block blocks))
-        (setq current-block
-              (list :type 'think
-                      :start-line line-number
-                      :closed nil
-                      :content nil)))
-
-       ;; Check for </think> closing tag
-       ((string-match "^\\s-*</think>\\s-*$" line)
-        (when (and current-block (eq (plist-get current-block :type) 'think))
-          (plist-put current-block :closed t)
-          (plist-put current-block :end-line line-number)
-          (push current-block blocks)
-          (setq current-block nil)))
-
        ;; Check for code block closing first
        ((and current-block
              (eq (plist-get current-block :type) 'code)
@@ -203,8 +223,7 @@ Returns a list of parsed blocks with their properties."
 
        ;; Regular content outside blocks
        (t
-        (setq current-block (list :type 'text :content line))))
-      )
+        (setq current-block (list :type 'text :content line)))))
 
     ;; Handle unclosed block at end
     (when current-block
@@ -212,6 +231,25 @@ Returns a list of parsed blocks with their properties."
 
     ;; Return blocks in original order
     (reverse blocks)))
+
+(defun oh-puhn-text-ui--parse-response (text)
+  "Parse text containing <think> blocks and markdown content.
+Returns a list of parsed blocks with their properties."
+  (let* ((split-result (oh-puhn-text-ui--split-response text))
+         (thinking-content (car split-result))
+         (remaining-content (cdr split-result))
+         (blocks '()))
+
+    ;; Add thinking block if present
+    (when thinking-content
+      (push (list :type 'think :content thinking-content) blocks))
+
+    ;; Parse remaining content as markdown if present
+    (when remaining-content
+      (let ((markdown-blocks (oh-puhn-text-ui--parse-markdown remaining-content)))
+        (setq blocks (append blocks markdown-blocks))))
+
+    blocks))
 
 ; (defvar tree [])
 
@@ -586,6 +624,7 @@ Returns a closure to manually close the buffer."
         ({} (and (not message-content) (elx! (Spinner))))
         (div
          :onclick (lambda (e)
+                    (funcall (or (funcall input-editor-ref) #'ignore))
                     (funcall
                      input-editor-ref
                      (oh-puhn--input-editor
@@ -617,9 +656,19 @@ Returns a closure to manually close the buffer."
                            :content block-content
                            :thinking (not (plist-get block :closed)))))
                    ((eq block-type 'code)
-                    (elx! (CodeBlock
-                           :language (plist-get block :language)
-                           :content block-content)))
+                    (elx! (div
+                           :style
+                           (style!
+                            (flex_direction . 'Column)
+                            (align_items . '(Stretch))
+                            (padding
+                             (left . (reed-taffy-length 'length (plist-get block :indentation)))
+                             (right . ZERO)
+                             (top . ZERO)
+                             (bottom . ZERO)))
+                           (CodeBlock
+                            :language (plist-get block :language)
+                            :content block-content))))
                    (t (elx! (p ({} block-content)))))))
               (and message-content (oh-puhn-text-ui--parse-response message-content))))
          (p ({} (if (> total-swipes 1) (format "\n<%s/%s>" (1+ index) total-swipes) nil)))))))
@@ -680,9 +729,7 @@ Returns a closure to manually close the buffer."
      (let* ((input-editor-ref (use-ref (lambda ())))
             (value-sig (use-signal (lambda () "")))
             (value (funcall value-sig))
-            (close-input-editor (lambda ()
-                                  (let ((close (funcall input-editor-ref)))
-                                    (when close (funcall close)))))
+            (close-input-editor (lambda () (funcall (or (funcall input-editor-ref #'ignore)))))
             (element-ref (use-ref (lambda ()))))
        (use-drop close-input-editor)
        (use-subscribe
@@ -805,6 +852,7 @@ Returns a closure to manually close the buffer."
                 (lambda (id)
                   (elx!
                    (ChatMessage
+                    :id id
                     :ref (lambda (&rest ref)
                            (let ((message-element-hashtable (funcall message-elements-ref)))
                              (if ref
@@ -812,7 +860,6 @@ Returns a closure to manually close the buffer."
                                (gethash id message-element-hashtable))))
                     :conversation-tree-sig conversation-tree-sig
                     :leaf-id-sig leaf-id-sig
-                    :id id
                     :ongenerate handle-generate
                     :onhover (lambda ()
                                (funcall focusing-ref id))
@@ -961,7 +1008,7 @@ Otherwise uses the saved selected model."
 
 (pubsub-subscribe 'render (lambda () (oh-puhn-text-ui-handle-render)))
 (reed-register-app app-name #'App)
-;; (reed-init-tracing)
+(reed-init-tracing)
 
 (defun oh-puhn-text-ui ()
   (interactive)
@@ -977,6 +1024,6 @@ Otherwise uses the saved selected model."
     (setq-local truncate-lines t)
     (oh-puhn-text-ui-handle-render)))
 
-;; (oh-puhn-text-ui)
+(oh-puhn-text-ui)
 (provide 'oh-puhn-text-ui)
 ;;; oh-puhn-text-ui.el ends here
