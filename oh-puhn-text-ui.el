@@ -10,6 +10,7 @@
 (require 'reed-style)
 (require 'reed-render-helper)
 
+;; (reed-init-tracing)
 
 (defvar app-name "*oh-puhn-text-ui*")
 (defvar pubsub--subscriptions (make-hash-table :test 'eq))
@@ -96,7 +97,7 @@
 
 (defalias 'oh-puhn-text-ui-chat-completion 'oh-puhn-text-ui-chat-completion-ollama)
 
-(defcustom oh-puhn-text-ui-selected-model "gemma3:27b" ; "qwq:32b-q4_K_M" ; nil
+(defcustom oh-puhn-text-ui-selected-model nil
   "Currently selected model for oh-puhn-text-ui.
 This value is automatically saved across Emacs sessions."
   :type 'string
@@ -145,7 +146,7 @@ Returns the selected model name."
                                    (propertize model 'face 'highlight)
                                  model))
                              model-list)))
-    (completing-read prompt collection nil t nil nil default-model)))
+    (with-local-quit (completing-read prompt collection nil t nil nil default-model))))
 
 
 (defun oh-puhn-text-ui--split-response (text)
@@ -155,7 +156,7 @@ Returns (thinking-content . remaining-content):
 - (\"...thought...\" . \"\") - closed think block
 - (nil . \"...\") - no thinking block"
   (let* ((open-tag "<think>\n")
-         (close-tag "</think>\n")
+         (close-tag "\n</think>\n")
          (open-len (length open-tag))
          (close-len (length close-tag))
          (think-start (string-match open-tag text))
@@ -210,6 +211,18 @@ Returns a list of parsed blocks with their properties."
                       :indentation indentation
                       :language (if (string= language "") nil language)
                       :content nil))))
+
+       ;; Check for horizontal rule (---)
+       ((and (string-match "^\\s-*---\\s-*$" line)
+             (or (not current-block)
+                 (eq (plist-get current-block :type) 'text)))
+        (when current-block
+          ;; (let ((content (plist-get current-block :content)))
+          ;;   (when content (plist-put current-block :content (concat content "\n"))))
+          (push current-block blocks)
+          (setq current-block nil))
+        (push (list :type 'hr :line line-number) blocks))
+
        ;; Add content to current block
        (current-block
         (let* ((content (plist-get current-block :content))
@@ -242,7 +255,7 @@ Returns a list of parsed blocks with their properties."
 
     ;; Add thinking block if present
     (when thinking-content
-      (push (list :type 'think :content thinking-content) blocks))
+      (push (list :type 'think :content thinking-content :closed (not (not remaining-content))) blocks))
 
     ;; Parse remaining content as markdown if present
     (when remaining-content
@@ -329,7 +342,7 @@ Returns a list of parsed blocks with their properties."
                       (message-history (mapcar (lambda (id)
                                                  (let ((node (cddr (aref new-tree id))))
                                                    `(("role" . ,(symbol-name (car node)))
-                                                     ("content" . ,(cadr node))))
+                                                     ("content" . ,(or (cdr (oh-puhn-text-ui--split-response (cadr node))) ""))))
                                                  ) history-ids))
                       (abort (oh-puhn-text-ui-chat-completion
                               oh-puhn-text-ui-selected-model
@@ -377,6 +390,29 @@ Returns a list of parsed blocks with their properties."
     (lambda ()
       (funcall timer-ref (run-with-timer 0 nil f)))))
 
+(defvar language-id-major-mode-alist
+  '((python . python-mode)
+    (javascript . js-mode)
+    (typescript . typescript-mode)
+    (java . java-mode)
+    (c . c-mode)
+    (cpp . c++-mode)
+    (go . go-mode)
+    (rust . rust-mode)
+    (ruby . ruby-mode)
+    (php . php-mode)
+    (html . html-mode)
+    (css . css-mode)
+    (json . json-mode)
+    (yaml . yaml-mode)
+    (markdown . markdown-mode)
+    (bash . sh-mode)
+    (shellscript . sh-mode)
+    (dockerfile . dockerfile-mode)
+    (makefile . makefile-mode)
+    (org . org-mode))
+  "Alist mapping language IDs to major modes.")
+
 (defun oh-puhn--close-input-editor (input-editor-buffer)
   (seq-do
    (lambda (win)
@@ -385,14 +421,16 @@ Returns a list of parsed blocks with their properties."
   (kill-buffer input-editor-buffer))
 
 (defun oh-puhn--open-input-editor (input-editor-buffer)
-  (select-window
-   (display-buffer
-    (get-buffer-create input-editor-buffer)
-    '(display-buffer-pop-up-window
-      (inhibit-same-window . t)
-      (window-parameters (oh-puhn-text-ui-input . t))))))
+  (let ((old-windows (window-list))
+        (window (display-buffer
+                 (get-buffer-create input-editor-buffer)
+                 '(display-buffer-pop-up-window
+                   (inhibit-same-window . t)))))
+    (unless (memq window old-windows)
+      (set-window-parameter window 'oh-puhn-text-ui-input t))
+    (select-window window)))
 
-(defun oh-puhn--input-editor (name init-content submit-handler)
+(defun oh-puhn--input-editor (name mode init-content submit-handler)
   "Open a dedicated buffer with INIT-CONTENT for editing in a split window.
 Call SUBMIT-HANDLER with the new content on C-x C-s.
 Call SUBMIT-HANDLER with the temporary content when the buffer loses visibility.
@@ -409,7 +447,7 @@ Returns a closure to manually close the buffer."
                                         ;(switch-to-buffer edit-buffer)
 
     (with-current-buffer edit-buffer
-      (when oh-puhn-text-ui-input-editor-default-mode (funcall oh-puhn-text-ui-input-editor-default-mode))
+      (when mode (funcall mode))
       (insert init-content)
       (setq header-line-format "Edit buffer. Press C-x C-s to submit, C-g to cancel.")
       (use-local-map (make-sparse-keymap))
@@ -441,10 +479,35 @@ Returns a closure to manually close the buffer."
        (t
         (when (buffer-live-p edit-buffer)
           (let ((content (with-current-buffer edit-buffer
-                           (buffer-string))))
-            (select-window (get-buffer-window app-name t))
+                           (buffer-string)))
+                (app-window (get-buffer-window app-name t)))
+            (when app-window
+              (select-window app-window))
             (oh-puhn--close-input-editor edit-buffer)
             content)))))))
+
+(defun use-input-editor (editor-buffer-name language-id default-content onclose)
+  (let* ((default-content-ref (use-ref (lambda ())))
+         (input-editor-ref (use-ref (lambda ())))
+         (open-input (lambda (&rest rest)
+                       (funcall (or (funcall input-editor-ref) #'ignore))
+                       (funcall
+                        input-editor-ref
+                        (oh-puhn--input-editor
+                         editor-buffer-name
+                         (and language-id (alist-get (intern language-id) language-id-major-mode-alist))
+                         (funcall default-content-ref)
+                         (lambda (&rest rest)
+                           (funcall input-editor-ref nil)
+                           (apply onclose rest))))))
+         (close-input (lambda (&rest rest)
+                        (let ((close-editor (funcall input-editor-ref)))
+                          (when close-editor
+                            (funcall input-editor-ref nil)
+                            (funcall close-editor))))))
+    (use-drop close-input)
+    (funcall default-content-ref default-content)
+    (cons open-input close-input)))
 
 (defun make-spinner-iterator (spinner-frames)
   (let ((i -1)
@@ -452,6 +515,15 @@ Returns a closure to manually close the buffer."
     (lambda ()
       (setq i (mod (1+ i) n))
       (aref spinner-frames i))))
+
+(defvar oh-puhn-text-ui--hr
+  (elx!
+   (p
+    :face 'shadow
+    :style (style!*
+            (border (left . ZERO) (right . ZERO) (top . 1pt) (bottom . ZERO))
+            (size (width . 100%) (height . 0pt)))
+    " "))) ; TODO workaround
 
 (fc! Spinner ()
      (let ((current-buffer-name (buffer-name))
@@ -463,7 +535,7 @@ Returns a closure to manually close the buffer."
            (let* ((location (reed-get-absolut-location current-buffer-name (funcall spinner-element-ref)))
                   (x (car location))
                   (y (cdr location))
-                  (width (reed-get-width current-buffer-name)))
+                  (width (car (reed-get-size current-buffer-name))))
              (funcall spinner-pos-ref (+ (* (1+ width) y) x 1))))))
        (use-hook-with-cleanup
         (lambda ()
@@ -490,37 +562,28 @@ Returns a closure to manually close the buffer."
         (p :ref spinner-element-ref " "))))
 
 (fc! UserMessage (conversation-tree-sig leaf-id-sig node index total-swipes ongenerate)
-     (let* ((input-editor-ref (use-ref (lambda ())))
-            (node-ref (use-ref (lambda ())))
-            (close-input-editor (lambda ()
-                                  (let ((close (funcall input-editor-ref)))
-                                    (when close (funcall close)))))
-            (message-content (car (nthcdr 3 node))))
-       (funcall node-ref node)
-       (use-drop
-        (lambda ()
-          (let ((close-editor input-editor-ref))
-            (when close-editor (funcall close-editor)))))
+     (let* ((node-ref (use-ref (lambda ())))
+            (message-content (car (nthcdr 3 node)))
+            (input-editor-methods
+             (use-input-editor
+              "*oh-puhn-text-ui-input*"
+              "org"
+              message-content
+              (lambda (close-type new-content)
+                (if (eq close-type 'submit)
+                    (let* ((tree (funcall conversation-tree-sig))
+                           (inner-node (funcall node-ref))
+                           (parent-id (tree-get-parent tree (car inner-node)))
+                           (user-node-id (length tree))
+                           (new-tree (tree-add-child tree parent-id (list 'user new-content))))
+                      (funcall conversation-tree-sig new-tree)
+                      (funcall leaf-id-sig user-node-id)
+                      (funcall ongenerate user-node-id)))))))
+       (funcall node-ref node) ; work around for binding doesn't seem to be updated
        (elx!
         (div
-         :onclick (lambda (e)
-                    (funcall
-                     input-editor-ref
-                     (oh-puhn--input-editor
-                      "*oh-puhn-text-ui-input*"
-                      message-content
-                      (lambda (close-type new-content)
-                        (funcall input-editor-ref nil)
-                        (if (eq close-type 'submit)
-                            (let* ((tree (funcall conversation-tree-sig))
-                                   (inner-node (funcall node-ref))
-                                   (parent-id (tree-get-parent tree (car inner-node)))
-                                   (user-node-id (length tree))
-                                   (new-tree (tree-add-child tree parent-id (list 'user new-content))))
-                              (funcall conversation-tree-sig new-tree)
-                              (funcall leaf-id-sig user-node-id)
-                              (funcall ongenerate user-node-id)))))))
-         :onblur (lambda (e) (funcall close-input-editor))
+         :onclick (car input-editor-methods)
+         :onblur (cdr input-editor-methods)
          :style (style!*
                  (size
                   (width . 100%)
@@ -532,7 +595,11 @@ Returns a closure to manually close the buffer."
                    (left . 1pt)
                    (right . 1pt)
                    (top . 1pt)
-                   (bottom . 1pt)))
+                   (bottom . 1pt))
+                  (max_size
+                   (width . 100%)
+                   (height . AUTO)))
+          :border-chars "│─│─╭╮╯╰"
           ({} message-content)))
         ({} (and (> total-swipes 1)
                  (elx!
@@ -560,7 +627,7 @@ Returns a closure to manually close the buffer."
                  (align_items . '(Stretch)))
          (p
           :face 'header-line
-          "thinking..."
+          ({} (if thinking " Thinking... " " Thought "))
           ({} (if (funcall collapsed-sig) "⌃" "⌄")))
          ({} (and
               (not (funcall collapsed-sig))
@@ -574,39 +641,49 @@ Returns a closure to manually close the buffer."
                      ({} content)))))))))
 
 (fc! CodeBlock (content language)
-     (elx!
-      (div
-       :style (style!*
-               (flex_direction . 'Column)
-               (align_items . '(Stretch)))
-       (p
-        :style (style!*
-                (padding
-                 (left . 1pt)
-                 (right . 1pt)
-                 (top . 0pt)
-                 (bottom . 0pt)))
-        :face 'header-line
-        ({} language))
-       (p
-        :style (style!*
-                (padding
-                 (left . 1pt)
-                 (right . 1pt)
-                 (top . 0pt)
-                 (bottom . 0pt)))
-        :face 'fringe
-        ({} content)))))
+     (let ((input-editor-methods
+            (use-input-editor "*oh-puhn-text-ui-code-block*" language content #'ignore)))
+       (elx!
+        (div
+         :onclick (lambda (e)
+                    (reed-event-stop-propagation)
+                    (funcall (car input-editor-methods)))
+         :onblur (cdr input-editor-methods)
+         :style (style!*
+                 (flex_direction . 'Column)
+                 (align_items . '(Stretch)))
+         (p
+          :style (style!*
+                  (padding
+                   (left . 1pt)
+                   (right . 1pt)
+                   (top . 0pt)
+                   (bottom . 0pt)))
+          :face 'header-line
+          ({} language))
+         (p
+          :style (style!*
+                  (padding
+                   (left . 1pt)
+                   (right . 1pt)
+                   (top . 0pt)
+                   (bottom . 0pt)))
+          :face 'fringe
+          ({} content))))))
 
 (fc! AssistantMessage (node index total-swipes ongenerate)
      (let* ((regenerate-listener-ref (use-ref (lambda ())))
             (node-ref (use-ref (lambda ())))
             (hovering-ref (use-ref (lambda ())))
             (message-content (car (nthcdr 3 node)))
-            (message-content-ref (use-ref (lambda ())))
-            (input-editor-ref (use-ref (lambda ()))))
+            (input-editor-methods
+             (use-input-editor
+              "*oh-puhn-text-ui-assistant-message*"
+              "org"
+              message-content
+              #'ignore
+              )))
        (funcall node-ref node) ; TODO workaround for id and index binding issue in lambda onhover handler
-       (funcall message-content-ref message-content)
        (use-subscribe
         'regenerate-event
         (lambda ()
@@ -616,28 +693,13 @@ Returns a closure to manually close the buffer."
                    (inner-role (car (nthcdr 2 inner-node))))
               (when (eq inner-role 'assistant)
                 (funcall ongenerate inner-parent-id))))))
-       (use-drop
-        (lambda ()
-          (let ((close-editor input-editor-ref))
-            (when close-editor (funcall close-editor)))))
        (elx!
         ({} (and (not message-content) (elx! (Spinner))))
         (div
-         :onclick (lambda (e)
-                    (funcall (or (funcall input-editor-ref) #'ignore))
-                    (funcall
-                     input-editor-ref
-                     (oh-puhn--input-editor
-                      "*oh-puhn-text-ui-assistant-message*"
-                      (funcall message-content-ref)
-                      (lambda (&rest args)
-                        (funcall input-editor-ref nil)))))
+         :onclick (car input-editor-methods)
+         :onblur (cdr input-editor-methods)
          :onhover (lambda (e) (funcall hovering-ref t))
          :onleave (lambda (e) (funcall hovering-ref nil))
-         :onblur (lambda (e)
-                   (let ((close-editor (funcall input-editor-ref)))
-                     (when close-editor (funcall close-editor)))
-                   (funcall input-editor-ref nil))
          :style (style!*
                  (flex_direction . 'Column)
                  (align_items . '(Stretch))
@@ -669,6 +731,7 @@ Returns a closure to manually close the buffer."
                            (CodeBlock
                             :language (plist-get block :language)
                             :content block-content))))
+                   ((eq block-type 'hr) oh-puhn-text-ui--hr)
                    (t (elx! (p ({} block-content)))))))
               (and message-content (oh-puhn-text-ui--parse-response message-content))))
          (p ({} (if (> total-swipes 1) (format "\n<%s/%s>" (1+ index) total-swipes) nil)))))))
@@ -726,12 +789,20 @@ Returns a closure to manually close the buffer."
 
 
 (fc! InputArea (onsubmit)
-     (let* ((input-editor-ref (use-ref (lambda ())))
-            (value-sig (use-signal (lambda () "")))
+     (let* ((value-sig (use-signal (lambda () "")))
             (value (funcall value-sig))
-            (close-input-editor (lambda () (funcall (or (funcall input-editor-ref #'ignore)))))
-            (element-ref (use-ref (lambda ()))))
-       (use-drop close-input-editor)
+            (element-ref (use-ref (lambda ())))
+            (input-editor-methods
+             (use-input-editor
+              "*oh-puhn-text-ui-input*"
+              "org"
+              value
+              (lambda (close-type new-content)
+                (if (eq close-type 'submit)
+                    (progn
+                      (funcall value-sig "")
+                      (funcall onsubmit new-content))
+                  (funcall value-sig new-content))))))
        (use-subscribe
         'edit-event
         (lambda ()
@@ -740,28 +811,15 @@ Returns a closure to manually close the buffer."
        (elx!
         (p
          :ref element-ref
-         :onclick (lambda (e)
-                    (let ((editor-handle (funcall input-editor-ref)))
-                      (if editor-handle
-                          (funcall editor-handle 'focus)
-                        (funcall input-editor-ref
-                                 (oh-puhn--input-editor
-                                  "*oh-puhn-text-ui-input*"
-                                  (funcall value-sig)
-                                  (lambda (close-type new-content)
-                                    (funcall input-editor-ref nil)
-                                    (if (eq close-type 'submit)
-                                        (progn
-                                          (funcall value-sig "")
-                                          (funcall onsubmit new-content))
-                                      (funcall value-sig new-content))))))))
-         :onblur (lambda (e) (funcall close-input-editor))
+         :onclick (car input-editor-methods)
+         :onblur (cdr input-editor-methods)
          :style (style!* (display . 'Block)
                          (border
                           (left . 0pt)
                           (right . 0pt)
                           (top . 1pt)
                           (bottom . 0pt)))
+         :border-chars " ="
          ({} (if (equal value "")
                  (elx! (span :face 'shadow "<Press 'Enter' here to message assistant...>"))
                value))))))
@@ -794,7 +852,7 @@ Returns a closure to manually close the buffer."
        (p "How can I help you today?\n" (span :face 'shadow "`C-x e` to start writing your first message.")))))
 
 (fc! App ()
-     (let* ((conversation-tree-sig (use-signal (lambda () [])))
+     (let* ((conversation-tree-sig (use-signal (lambda () []))) ;; (0 nil user "hello") (1 0 assistant "---\nbruhhh")
             (conversation-tree (funcall conversation-tree-sig))
             (leaf-id-sig (use-signal (lambda ()
                                        (tree-get-latest-leaf
@@ -914,7 +972,7 @@ Returns a closure to manually close the buffer."
       (when (not (= last-buffer-width (window-width)))
         (setq last-buffer-width (window-width))
         (setq should-render t)
-        (reed-set-width app-name (scale-windows-width last-buffer-width)))
+        (reed-set-size app-name `(,(scale-windows-width last-buffer-width) . nil)))
       (when should-render
         (oh-puhn-text-ui-handle-render)))))
 
@@ -982,12 +1040,12 @@ Otherwise uses the saved selected model."
    (lambda (models-names)
      (let* ((default-model oh-puhn-text-ui-selected-model)
             (selected-model (oh-puhn-text-ui-select-model models-names default-model)))
-       (setq oh-puhn-text-ui-selected-model selected-model)
-       (customize-save-variable 'oh-puhn-text-ui-selected-model selected-model)
-       (message "Selected model: %s (saved)" selected-model)
-       (with-current-buffer app-name
-         (setq header-line-format selected-model))
-       selected-model))))
+       (when selected-model
+         (setq oh-puhn-text-ui-selected-model selected-model)
+         (customize-save-variable 'oh-puhn-text-ui-selected-model selected-model)
+         (message "Selected model: %s (saved)" selected-model)
+         (with-current-buffer app-name
+           (setq header-line-format selected-model)))))))
 
 
 (defun oh-puhn-text-ui-key-binding ()
@@ -1008,7 +1066,7 @@ Otherwise uses the saved selected model."
 
 (pubsub-subscribe 'render (lambda () (oh-puhn-text-ui-handle-render)))
 (reed-register-app app-name #'App)
-(reed-init-tracing)
+
 
 (defun oh-puhn-text-ui ()
   (interactive)
@@ -1018,12 +1076,12 @@ Otherwise uses the saved selected model."
     (setq header-line-format (or oh-puhn-text-ui-selected-model "No model selected, Press C-c m to select model."))
     (buffer-disable-undo)
     (add-to-list 'post-command-hook #'do-stuff-if-moved-post-command)
-    (reed-set-width app-name (scale-windows-width last-buffer-width))
+    (reed-set-size app-name `(,(scale-windows-width last-buffer-width) . nil))
     (switch-to-buffer app-name)
     (oh-puhn-text-ui-key-binding)
     (setq-local truncate-lines t)
     (oh-puhn-text-ui-handle-render)))
 
-(oh-puhn-text-ui)
+; (oh-puhn-text-ui)
 (provide 'oh-puhn-text-ui)
 ;;; oh-puhn-text-ui.el ends here
