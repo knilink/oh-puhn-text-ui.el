@@ -6,7 +6,7 @@ Clone and Build reed
 ``` sh
 git clone https://github.com/knilink/reed.el
 cd reed.el
-git checkout 7b5cf31
+git checkout ace8f38
 cargo build --release
 ```
 Clone this repo
@@ -29,6 +29,7 @@ Load the dynamic module and elisp script to emacs.d as well as customize complet
 ## Bindings
 ### oh-puhn-text-ui
 - `RET`: `oh-puhn-text-ui-handle-click`, open input buffer for user message content at cursor position
+- `<tab>`: `oh-puhn-text-ui-handle-tab`, expand/collapse reasoning block
 - `[`: `oh-puhn-text-ui-swipe-left`, swipe to previous message at cursor position
 - `]`: `oh-puhn-text-ui-swipe-right`, swipe to next message at cursor position
 - `C-r`: `oh-puhn-text-ui-regenerate`, regenerate assistant message at cursor position
@@ -42,4 +43,5 @@ Load the dynamic module and elisp script to emacs.d as well as customize complet
 - `C-g`: abort editing
 
 ## Demo
-[demo.mp4](https://github.com/user-attachments/assets/62660eaa-1969-48f8-8a6e-7e29c6d0ded7)
+[demo.mp4](https://github.com/user-attachments/assets/04664f1e-7d7e-403e-b831-262aaf82943d)
+
